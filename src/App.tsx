@@ -198,7 +198,7 @@ function App() {
   const [future, setFuture] = useState<BuilderProject[]>([])
   const [selectedId, setSelectedId] = useState(project.elements[0]?.id ?? '')
   const [device, setDevice] = useState<DeviceMode>('desktop')
-  const [zoom, setZoom] = useState(78)
+  const [zoom, setZoom] = useState(64)
   const [lastSaved, setLastSaved] = useState('Saved locally')
   const [isExporting, setIsExporting] = useState(false)
   const [isPreviewing, setIsPreviewing] = useState(false)

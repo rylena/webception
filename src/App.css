@@ -416,9 +416,9 @@ select:focus-visible,
 
 .site-canvas {
   position: relative;
-  margin: 10px auto 58px;
+  margin: 10px 0 58px;
   overflow: hidden;
-  transform-origin: top center;
+  transform-origin: top left;
   border: 1px solid color-mix(in srgb, var(--line) 78%, #fff);
   border-radius: 18px;
   box-shadow:
@@ -596,6 +596,9 @@ select:focus-visible,
   width: 100%;
   height: 100%;
   border-radius: calc(var(--element-radius) - 4px);
+  background:
+    linear-gradient(135deg, rgba(36, 81, 58, 0.18), rgba(128, 90, 69, 0.14)),
+    repeating-linear-gradient(45deg, rgba(36, 81, 58, 0.08) 0 10px, transparent 10px 20px);
   object-fit: cover;
   filter: saturate(0.92);
 }
