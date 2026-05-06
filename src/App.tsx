@@ -186,6 +186,12 @@ const starterProject: BuilderProject = {
   ],
 }
 
+const templates = [
+  { key: 'startup', name: 'Startup', detail: 'SaaS landing page' },
+  { key: 'portfolio', name: 'Portfolio', detail: 'Personal project site' },
+  { key: 'event', name: 'Event', detail: 'Hack night signup' },
+] as const
+
 function App() {
   const [project, setProject] = useState<BuilderProject>(loadProject)
   const [history, setHistory] = useState<BuilderProject[]>([])
@@ -319,6 +325,13 @@ function App() {
     setSelectedId(starterProject.elements[0].id)
   }
 
+  function applyTemplate(key: (typeof templates)[number]['key']) {
+    if (!window.confirm(`Replace the canvas with the ${key} template?`)) return
+    const next = makeTemplateProject(key)
+    commitProject(() => next)
+    setSelectedId(next.elements[0]?.id ?? '')
+  }
+
   function deleteSelected() {
     if (!selected) return
     commitProject((current) => ({ ...current, elements: current.elements.filter((element) => element.id !== selected.id) }))
@@ -447,6 +460,14 @@ function App() {
             <span>Blocks</span>
             <small>Tap to add</small>
           </div>
+          <section className="template-list" aria-label="Templates">
+            {templates.map((template) => (
+              <button type="button" key={template.key} className="template-tile" onClick={() => applyTemplate(template.key)}>
+                <strong>{template.name}</strong>
+                <small>{template.detail}</small>
+              </button>
+            ))}
+          </section>
           <div className="palette-scroll">
             {paletteGroups.map((group) => (
               <section className="palette-group" key={group.label}>
@@ -926,6 +947,58 @@ function makeElement(kind: ElementKind, placementPatch: Partial<Placement> = {})
     style: baseStyle,
     animation: { type: 'rise', duration: 620, delay: 0, easing: 'ease-out', repeat: false },
   }
+}
+
+function makeTemplateProject(key: (typeof templates)[number]['key']): BuilderProject {
+  if (key === 'portfolio') {
+    return {
+      name: 'Portfolio',
+      themeMode: 'system',
+      pageBackground: '#f2f4ef',
+      elements: [
+        makeElement('navbar', { x: 64, y: 34, width: 1072, height: 70, zIndex: 4 }),
+        customize(makeElement('hero', { x: 82, y: 136, width: 610, height: 300, zIndex: 2 }), {
+          title: 'Rylen builds useful web experiments',
+          text: 'A focused portfolio for projects, demos, and small internet tools.',
+          action: 'View work',
+        }),
+        customize(makeElement('gallery', { x: 82, y: 500, width: 650, height: 200, zIndex: 2 }), { title: 'Selected work' }),
+        customize(makeElement('stats', { x: 760, y: 146, width: 310, height: 130, zIndex: 2 }), { title: 'Project stats' }),
+        customize(makeElement('testimonial', { x: 740, y: 330, width: 360, height: 210, zIndex: 2 }), {
+          title: 'Build log',
+          text: 'Every project gets clearer when the demo page is easy to change.',
+        }),
+      ],
+    }
+  }
+
+  if (key === 'event') {
+    return {
+      name: 'Event',
+      themeMode: 'system',
+      pageBackground: '#f8f1eb',
+      elements: [
+        customize(makeElement('badge', { x: 82, y: 120, width: 190, height: 40, zIndex: 3 }), { text: 'Friday 6:30 PM' }),
+        customize(makeElement('hero', { x: 82, y: 170, width: 620, height: 290, zIndex: 2 }), {
+          title: 'Ship night at the clubhouse',
+          text: 'Bring a half-finished idea and leave with something people can open.',
+          action: 'Reserve a spot',
+        }),
+        customize(makeElement('contact', { x: 760, y: 160, width: 330, height: 360, zIndex: 2 }), {
+          title: 'RSVP',
+          action: 'Join event',
+        }),
+        customize(makeElement('faq', { x: 96, y: 520, width: 520, height: 230, zIndex: 2 }), { title: 'Event notes' }),
+        customize(makeElement('blob', { x: 700, y: 110, width: 430, height: 480, zIndex: 0 }), {}),
+      ],
+    }
+  }
+
+  return cloneProject(starterProject)
+}
+
+function customize(element: BuilderElement, patch: Partial<BuilderElement>): BuilderElement {
+  return { ...element, ...patch }
 }
 
 function defaultPlacement(kind: ElementKind): Placement {

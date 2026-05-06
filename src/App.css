@@ -247,6 +247,41 @@ select:focus-visible,
   gap: 16px;
 }
 
+.template-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.template-tile {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 11%, var(--field)), var(--field));
+  text-align: left;
+}
+
+.template-tile strong {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.template-tile small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.template-tile:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+}
+
 .palette-group {
   display: grid;
   gap: 10px;
