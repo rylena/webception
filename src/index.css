@@ -1,0 +1,30 @@
+:root {
+  --accent: #224b35;
+  --chrome: #f2f4ef;
+  --ink: #1f241f;
+  --muted: #697166;
+  --line: #d9ded2;
+  --mono: 'SFMono-Regular', 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+  font-family:
+    Geist, Satoshi, 'Avenir Next', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont,
+    sans-serif;
+  color: var(--ink);
+  background: var(--chrome);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  margin: 0;
+}
+
+#root {
+  min-height: 100dvh;
+}
