@@ -1,73 +1,61 @@
-# React + TypeScript + Vite
+<p align="center">
+  <img src="./docs/webception-logo.svg" width="84" alt="Webception logo" />
+</p>
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+<h1 align="center">Webception</h1>
 
-Currently, two official plugins are available:
+<p align="center">
+  A freeform website builder for sketching, styling, animating, and exporting polished static pages.
+</p>
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+<p align="center">
+  <img src="./docs/webception-banner.png" alt="Webception editor banner" />
+</p>
 
-## React Compiler
+## What It Does
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Webception is a local-first website studio built with React and Vite. It gives you a Wix-like canvas where you can place blocks freely, tune styles, preview responsive layouts, and export a ready-to-host ZIP.
 
-## Expanding the ESLint configuration
+## Features
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- Freeform drag-and-resize canvas
+- Desktop, tablet, and mobile frame modes
+- System, light, and dark editor themes
+- Font picker with Satoshi, General Sans, Hind, and Nunito
+- Blocks for navbars, heroes, text, buttons, images, cards, pricing, FAQ, contact forms, stats, video placeholders, and footers
+- Shapes including rectangles, circles, lines, pills, blobs, badges, and icon marks
+- Animation controls for fade, rise, slide, scale, blur, duration, delay, easing, and looping
+- Starter, portfolio, and event templates
+- Undo, redo, duplicate, delete, layer controls, clear all, and reset starter
+- ZIP export containing `index.html`, `styles.css`, and `script.js`
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Tech Stack
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+- React
+- TypeScript
+- Vite
+- JSZip
+- Playwright
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Run Locally
+
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Checks
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run build
+npm run lint
+npm run test:e2e
 ```
+
+## Export Flow
+
+Use the editor, press **Download**, and Webception creates a static site ZIP. The exported site includes layout styles, responsive overrides, Fontshare font links, and CSS animation keyframes.
+
+## Project Status
+
+Webception is a working local-first builder prototype. It is designed for quick Hack Club-style demos, project pages, portfolios, event pages, and landing-page experiments.
