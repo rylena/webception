@@ -1,17 +1,45 @@
 import { expect, test } from '@playwright/test'
 
-test('adds blocks, edits copy, and opens export markup', async ({ page }) => {
+test.beforeEach(async ({ page }) => {
   await page.goto('/')
+  await page.evaluate(() => localStorage.clear())
+  await page.reload()
+})
 
-  await expect(page.getByText('Webception')).toBeVisible()
+test('adds, edits, positions, animates, and downloads a site', async ({ page }) => {
+  await expect(page.getByText('Webception', { exact: true })).toBeVisible()
 
-  await page.locator('.block-tile').filter({ hasText: 'Text' }).click()
-  await expect(page.locator('.canvas-block.text')).toHaveCount(2)
+  await page.getByRole('button', { name: 'Text Short paragraph' }).click()
+  await expect(page.locator('.canvas-element.text')).toHaveCount(1)
 
   await page.locator('.inspector-stack textarea').first().fill('Hack Club launch site copy')
   await expect(page.getByLabel('Canvas').getByText('Hack Club launch site copy')).toBeVisible()
 
-  await page.getByRole('button', { name: 'Export' }).click()
-  await expect(page.getByRole('dialog', { name: 'Export HTML' })).toBeVisible()
-  await expect(page.locator('.export-modal textarea')).toContainText('Exported from Webception')
+  await page.getByRole('spinbutton', { name: 'X' }).fill('160')
+  await page.getByRole('spinbutton', { name: 'Y' }).fill('240')
+  await expect(page.locator('.canvas-element.text')).toHaveCSS('left', '160px')
+  await expect(page.locator('.canvas-element.text')).toHaveCSS('top', '240px')
+
+  await page.getByLabel('Type').selectOption('scale')
+  await page.getByRole('button', { name: 'Preview animation' }).click()
+  await expect(page.locator('.canvas-element.text')).toHaveClass(/animate-scale/)
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Download' }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toBe('webception-site.zip')
+})
+
+test('switches themes, applies templates, and clears the canvas', async ({ page }) => {
+  await page.getByRole('button', { name: 'dark' }).click()
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-theme', 'dark')
+
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: /Portfolio/ }).click()
+  await expect(page.getByLabel('Page name')).toHaveValue('Portfolio')
+  await expect(page.getByText('Rylen builds useful web experiments')).toBeVisible()
+
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Clear all' }).click()
+  await expect(page.locator('.canvas-element')).toHaveCount(0)
 })
