@@ -1,6 +1,9 @@
 import JSZip from 'jszip'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
+import type { Session, User } from '@supabase/supabase-js'
 import './App.css'
+import { isSupabaseConfigured, supabase } from './supabaseClient'
 
 type DeviceMode = 'desktop' | 'tablet' | 'mobile'
 type ThemeMode = 'system' | 'light' | 'dark'
@@ -115,6 +118,22 @@ type QuickMenuState = {
   y: number
 }
 
+type CloudProject = {
+  id: string
+  name: string
+  updated_at: string
+}
+
+type CloudProjectRow = CloudProject & {
+  data: BuilderProject
+}
+
+type AuthRedirectNotice = {
+  kind: 'confirmed' | 'error'
+  title: string
+  text: string
+}
+
 type LibraryKey = 'templates' | 'elements' | 'text' | 'media' | 'sections' | 'shapes'
 
 type PaletteItem = {
@@ -127,8 +146,6 @@ type PaletteItem = {
     placement?: Partial<Placement>
   }
 }
-
-const storageKey = 'webception-project-v2'
 
 const canvasSizes: Record<DeviceMode, { width: number; height: number }> = {
   desktop: { width: 1200, height: 820 },
@@ -246,14 +263,17 @@ const templates = [
   { key: 'event', name: 'Event', detail: 'Hack night signup' },
 ] as const
 
+const passwordMinLength = 8
+type PublicRoute = '/' | '/login' | '/signup'
+
 function App() {
-  const [project, setProject] = useState<BuilderProject>(loadProject)
+  const [project, setProject] = useState<BuilderProject>(() => cloneProject(starterProject))
   const [history, setHistory] = useState<BuilderProject[]>([])
   const [future, setFuture] = useState<BuilderProject[]>([])
   const [selectedId, setSelectedId] = useState(project.elements[0]?.id ?? '')
   const [device, setDevice] = useState<DeviceMode>('desktop')
   const [zoom, setZoom] = useState(64)
-  const [lastSaved, setLastSaved] = useState('Saved locally')
+  const [lastSaved, setLastSaved] = useState('Online only')
   const [isExporting, setIsExporting] = useState(false)
   const [isPreviewing, setIsPreviewing] = useState(false)
   const [previewTick, setPreviewTick] = useState(0)
@@ -261,11 +281,25 @@ function App() {
   const [libraryQuery, setLibraryQuery] = useState('')
   const [recentKinds, setRecentKinds] = useState<ElementKind[]>(['rect', 'circle', 'image', 'button'])
   const [quickMenu, setQuickMenu] = useState<QuickMenuState | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
+  const [cloudProjects, setCloudProjects] = useState<CloudProject[]>([])
+  const [activeCloudProjectId, setActiveCloudProjectId] = useState('')
+  const [cloudStatus, setCloudStatus] = useState(isSupabaseConfigured ? 'Sign in to save online' : 'Add Supabase env vars')
+  const [authMessage, setAuthMessage] = useState('')
+  const [isAuthOpen, setIsAuthOpen] = useState(false)
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false)
+  const [isAuthBusy, setIsAuthBusy] = useState(false)
+  const [isCloudBusy, setIsCloudBusy] = useState(false)
+  const [isSessionLoading, setIsSessionLoading] = useState(isSupabaseConfigured)
+  const [authRedirectNotice, setAuthRedirectNotice] = useState<AuthRedirectNotice | null>(() => readAuthRedirectNotice())
+  const [publicRoute, setPublicRoute] = useState<PublicRoute>(() => readPublicRoute())
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
   const dragRef = useRef<DragState | null>(null)
+  const cloudSaveReadyRef = useRef(false)
 
   const selected = project.elements.find((element) => element.id === selectedId) ?? project.elements[0]
   const quickMenuElement = quickMenu ? project.elements.find((element) => element.id === quickMenu.id) : undefined
+  const user = session?.user ?? null
   const resolvedTheme = project.themeMode === 'system' ? (systemDark ? 'dark' : 'light') : project.themeMode
   const canvasSize = canvasSizes[device]
   const exportBundle = useMemo(() => buildExport(project), [project])
@@ -289,10 +323,18 @@ function App() {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(project))
-    const timer = window.setTimeout(() => setLastSaved('Saved locally'), 250)
-    return () => window.clearTimeout(timer)
-  }, [project])
+    function syncRoute() {
+      setPublicRoute(readPublicRoute())
+    }
+
+    window.addEventListener('popstate', syncRoute)
+    return () => window.removeEventListener('popstate', syncRoute)
+  }, [])
+
+  function navigatePublicRoute(path: PublicRoute) {
+    window.history.pushState(null, '', path)
+    setPublicRoute(path)
+  }
 
   useEffect(() => {
     function closeQuickMenu(event: PointerEvent) {
@@ -313,7 +355,7 @@ function App() {
   }, [])
 
   const commitProject = useCallback((updater: (current: BuilderProject) => BuilderProject) => {
-    setLastSaved('Saving')
+    setLastSaved('Saving to cloud')
     setProject((current) => {
       const next = updater(current)
       if (next === current) return current
@@ -322,6 +364,138 @@ function App() {
       return next
     })
   }, [])
+
+  const loadCloudProjects = useCallback(async (nextUser: User) => {
+    if (!supabase) return
+    setIsCloudBusy(true)
+    setCloudStatus('Loading cloud projects')
+    cloudSaveReadyRef.current = false
+
+    const { data, error } = await supabase
+      .from('builder_projects')
+      .select('id,name,updated_at,data')
+      .eq('user_id', nextUser.id)
+      .order('updated_at', { ascending: false })
+
+    if (error) {
+      setCloudStatus('Cloud load failed')
+      setAuthMessage(error.message)
+      setIsCloudBusy(false)
+      return
+    }
+
+    let rows = (data ?? []) as CloudProjectRow[]
+
+    if (!rows.length) {
+      const firstProject = { ...cloneProject(starterProject), name: 'Home' }
+      const { data: created, error: createError } = await supabase
+        .from('builder_projects')
+        .insert({
+          user_id: nextUser.id,
+          name: firstProject.name,
+          data: firstProject,
+        })
+        .select('id,name,updated_at,data')
+        .single()
+
+      if (createError) {
+        setCloudStatus('Cloud setup failed')
+        setAuthMessage(createError.message)
+        setIsCloudBusy(false)
+        return
+      }
+
+      rows = [created as CloudProjectRow]
+    }
+
+    const summaries = rows.map(({ id, name, updated_at }) => ({ id, name, updated_at }))
+    setCloudProjects(summaries)
+    setActiveCloudProjectId(rows[0].id)
+    setProject(normalizeCloudProject(rows[0].data, rows[0].name))
+    setSelectedId(rows[0].data.elements?.[0]?.id ?? '')
+    setCloudStatus('Cloud synced')
+    window.setTimeout(() => {
+      cloudSaveReadyRef.current = true
+    }, 0)
+    setIsCloudBusy(false)
+  }, [])
+
+  useEffect(() => {
+    if (!supabase) {
+      return
+    }
+
+    const redirectNotice = readAuthRedirectNotice()
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session)
+      if (data.session?.user) {
+        setIsDashboardOpen(!redirectNotice)
+        void loadCloudProjects(data.session.user)
+      }
+      if (redirectNotice) {
+        setAuthRedirectNotice(redirectNotice)
+        cleanupAuthRedirectUrl()
+      }
+      setIsSessionLoading(false)
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+      setAuthMessage('')
+      setIsAuthOpen(false)
+      if (nextSession?.user) {
+        setIsDashboardOpen(true)
+        void loadCloudProjects(nextSession.user)
+      } else {
+        cloudSaveReadyRef.current = false
+        setCloudProjects([])
+        setActiveCloudProjectId('')
+        setIsDashboardOpen(false)
+        setCloudStatus('Sign in to save online')
+      }
+    })
+
+    return () => listener.subscription.unsubscribe()
+  }, [loadCloudProjects])
+
+  useEffect(() => {
+    if (!supabase || !user || !activeCloudProjectId || !cloudSaveReadyRef.current) return
+    const client = supabase
+
+    const timer = window.setTimeout(async () => {
+      setCloudStatus('Saving to cloud')
+      const { error } = await client
+        .from('builder_projects')
+        .update({
+          name: project.name || 'Untitled',
+          data: project,
+        })
+        .eq('id', activeCloudProjectId)
+        .eq('user_id', user.id)
+
+      if (error) {
+        setCloudStatus('Cloud save failed')
+        setLastSaved('Cloud save failed')
+        setAuthMessage(error.message)
+        return
+      }
+
+      setCloudStatus('Cloud synced')
+      setLastSaved('Cloud synced')
+      setCloudProjects((items) =>
+        items
+          .map((item) =>
+            item.id === activeCloudProjectId
+              ? { ...item, name: project.name || 'Untitled', updated_at: new Date().toISOString() }
+              : item,
+          )
+          .toSorted((a, b) => b.updated_at.localeCompare(a.updated_at)),
+      )
+    }, 850)
+
+    return () => window.clearTimeout(timer)
+  }, [activeCloudProjectId, project, user])
 
   useEffect(() => {
     function handlePointerMove(event: PointerEvent) {
@@ -368,6 +542,150 @@ function App() {
     commitProject((current) => ({ ...current, elements: [...current.elements, element] }))
     setSelectedId(element.id)
     setRecentKinds((kinds) => [kind, ...kinds.filter((item) => item !== kind)].slice(0, 8))
+  }
+
+  async function signIn(email: string, password: string) {
+    if (!supabase) return
+    setIsAuthBusy(true)
+    setAuthMessage('')
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password,
+    })
+    setIsAuthBusy(false)
+    if (error) {
+      setAuthMessage(error.message)
+      return
+    }
+    if (data.session?.user) {
+      setSession(data.session)
+      setIsDashboardOpen(true)
+      void loadCloudProjects(data.session.user)
+    }
+  }
+
+  async function signUp(email: string, password: string) {
+    if (!supabase) return
+    setIsAuthBusy(true)
+    setAuthMessage('')
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim().toLowerCase(),
+      password,
+      options: {
+        emailRedirectTo: `${window.location.origin}/?confirmed=1`,
+      },
+    })
+    setIsAuthBusy(false)
+    if (error) {
+      setAuthMessage(error.message)
+      return
+    }
+    if (data.session?.user) {
+      setSession(data.session)
+      setIsDashboardOpen(true)
+      void loadCloudProjects(data.session.user)
+      return
+    }
+    setAuthMessage('Account created. Confirm your email, then come back and log in.')
+  }
+
+  async function signOut() {
+    if (!supabase) return
+    await supabase.auth.signOut()
+    setSession(null)
+    setIsDashboardOpen(false)
+    setCloudStatus('Sign in to save online')
+  }
+
+  async function createCloudProject() {
+    if (!supabase || !user) return
+    setIsCloudBusy(true)
+    cloudSaveReadyRef.current = false
+    const nextProject = {
+      ...cloneProject(starterProject),
+      name: `Project ${cloudProjects.length + 1}`,
+    }
+    const { data, error } = await supabase
+      .from('builder_projects')
+      .insert({
+        user_id: user.id,
+        name: nextProject.name,
+        data: nextProject,
+      })
+      .select('id,name,updated_at,data')
+      .single()
+
+    if (error) {
+      setAuthMessage(error.message)
+      setCloudStatus('Create failed')
+      setIsCloudBusy(false)
+      return
+    }
+
+    const created = data as CloudProjectRow
+    setCloudProjects((items) => [{ id: created.id, name: created.name, updated_at: created.updated_at }, ...items])
+    setActiveCloudProjectId(created.id)
+    setProject(normalizeCloudProject(created.data, created.name))
+    setSelectedId(created.data.elements?.[0]?.id ?? '')
+    setCloudStatus('Cloud synced')
+    setLastSaved('Cloud synced')
+    setIsDashboardOpen(false)
+    window.setTimeout(() => {
+      cloudSaveReadyRef.current = true
+    }, 0)
+    setIsCloudBusy(false)
+  }
+
+  async function openCloudProject(id: string) {
+    if (!supabase || !user || id === activeCloudProjectId) return
+    setIsCloudBusy(true)
+    cloudSaveReadyRef.current = false
+    const { data, error } = await supabase
+      .from('builder_projects')
+      .select('id,name,updated_at,data')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .single()
+
+    if (error) {
+      setAuthMessage(error.message)
+      setCloudStatus('Project load failed')
+      setIsCloudBusy(false)
+      return
+    }
+
+    const row = data as CloudProjectRow
+    setActiveCloudProjectId(row.id)
+    setProject(normalizeCloudProject(row.data, row.name))
+    setSelectedId(row.data.elements?.[0]?.id ?? '')
+    setCloudStatus('Cloud synced')
+    setLastSaved('Cloud synced')
+    setIsDashboardOpen(false)
+    window.setTimeout(() => {
+      cloudSaveReadyRef.current = true
+    }, 0)
+    setIsCloudBusy(false)
+  }
+
+  async function deleteCloudProject() {
+    if (!supabase || !user || !activeCloudProjectId) return
+    if (!window.confirm('Delete this cloud project?')) return
+    setIsCloudBusy(true)
+    cloudSaveReadyRef.current = false
+    const { error } = await supabase
+      .from('builder_projects')
+      .delete()
+      .eq('id', activeCloudProjectId)
+      .eq('user_id', user.id)
+
+    if (error) {
+      setAuthMessage(error.message)
+      setCloudStatus('Delete failed')
+      setIsCloudBusy(false)
+      return
+    }
+
+    await loadCloudProjects(user)
   }
 
   function updateElement(patch: Partial<BuilderElement>) {
@@ -518,9 +836,91 @@ function App() {
     setIsExporting(false)
   }
 
+  if (isSessionLoading) {
+    return (
+      <main className="landing-shell" data-theme={resolvedTheme}>
+        <section className="landing-card loading-card">
+          <LogoMark />
+          <strong>Loading Webception</strong>
+          <span>Checking your secure session.</span>
+        </section>
+      </main>
+    )
+  }
+
+  if (authRedirectNotice) {
+    return (
+      <AuthResultPage
+        notice={authRedirectNotice}
+        user={user}
+        onContinue={() => {
+          setAuthRedirectNotice(null)
+          if (user) {
+            setIsDashboardOpen(true)
+          } else {
+            setAuthMessage('Account confirmed. Log in to open your dashboard.')
+            navigatePublicRoute('/login')
+          }
+        }}
+      />
+    )
+  }
+
+  if (!user) {
+    if (publicRoute === '/login' || publicRoute === '/signup') {
+      return (
+        <AuthPage
+          mode={publicRoute === '/login' ? 'login' : 'signup'}
+          configured={isSupabaseConfigured}
+          busy={isAuthBusy}
+          message={authMessage}
+          onSignIn={signIn}
+          onSignUp={signUp}
+        />
+      )
+    }
+
+    return (
+      <LandingPage />
+    )
+  }
+
+  if (isDashboardOpen) {
+    return (
+      <main className="dashboard-shell" data-theme={resolvedTheme}>
+        <ProjectDashboard
+          user={user}
+          projects={cloudProjects}
+          activeProjectId={activeCloudProjectId}
+          status={cloudStatus}
+          busy={isCloudBusy}
+          onProjectOpen={openCloudProject}
+          onNewProject={createCloudProject}
+          onDeleteProject={deleteCloudProject}
+          onSignOut={signOut}
+          onClose={() => setIsDashboardOpen(false)}
+        />
+      </main>
+    )
+  }
+
   return (
     <main className="app-shell" data-theme={resolvedTheme}>
       <header className="topbar">
+        <CloudProjectControls
+          user={user}
+          projects={cloudProjects}
+          activeProjectId={activeCloudProjectId}
+          status={cloudStatus}
+          busy={isCloudBusy}
+          onOpenAuth={() => setIsAuthOpen(true)}
+          onOpenDashboard={() => setIsDashboardOpen(true)}
+          onProjectChange={openCloudProject}
+          onNewProject={createCloudProject}
+          onDeleteProject={deleteCloudProject}
+          onSignOut={signOut}
+        />
+
         <div className="page-control" aria-label="Current page">
           <span>Pages</span>
           <input
@@ -680,7 +1080,500 @@ function App() {
           onClose={() => setQuickMenu(null)}
         />
       )}
+
+      {isAuthOpen && (
+        <AuthDialog
+          configured={isSupabaseConfigured}
+          busy={isAuthBusy}
+          message={authMessage}
+          onSignIn={signIn}
+          onSignUp={signUp}
+          onClose={() => setIsAuthOpen(false)}
+        />
+      )}
+
+      {user && isDashboardOpen && (
+        <ProjectDashboard
+          user={user}
+          projects={cloudProjects}
+          activeProjectId={activeCloudProjectId}
+          status={cloudStatus}
+          busy={isCloudBusy}
+          onProjectOpen={openCloudProject}
+          onNewProject={createCloudProject}
+          onDeleteProject={deleteCloudProject}
+          onSignOut={signOut}
+          onClose={() => setIsDashboardOpen(false)}
+        />
+      )}
     </main>
+  )
+}
+
+function AuthResultPage({
+  notice,
+  user,
+  onContinue,
+}: {
+  notice: AuthRedirectNotice
+  user: User | null
+  onContinue: () => void
+}) {
+  return (
+    <main className="landing-shell auth-result-shell">
+      <section className={`landing-card auth-result-card ${notice.kind}`}>
+        <LogoMark />
+        <span>{notice.kind === 'confirmed' ? 'Ready' : 'Action needed'}</span>
+        <h1>{notice.title}</h1>
+        <p>{notice.text}</p>
+        <button type="button" className="auth-submit" onClick={onContinue}>
+          {user ? 'Head to your dashboard' : 'Log in'}
+        </button>
+      </section>
+    </main>
+  )
+}
+
+function LandingPage() {
+  return (
+    <main className="landing-shell">
+      <nav className="landing-nav" aria-label="Landing navigation">
+        <a className="landing-brand" href="/" aria-label="Webception home">
+          <LogoMark />
+          <strong>Webception</strong>
+        </a>
+        <div className="landing-nav-actions">
+          <a className="landing-link secondary" href="/login">Log in</a>
+          <a className="landing-link primary" href="/signup">Start building</a>
+        </div>
+      </nav>
+
+      <section className="landing-hero">
+        <div className="hero-badge">
+          <span />
+          Online website builder
+        </div>
+        <h1>Design, save, and <em>ship</em><br />from one studio.</h1>
+        <p>
+          Webception keeps every project in your account so you can start a page,
+          return later, and export a clean static site the moment it is ready.
+        </p>
+        <div className="hero-cta">
+          <a className="btn-primary" href="/signup">Create free account</a>
+          <a className="btn-secondary" href="#features">See how it works</a>
+        </div>
+        <small>No credit card required. Free forever on one project.</small>
+        <div className="landing-points" aria-label="Product highlights">
+          <span>Cloud projects</span>
+          <span>Freeform canvas</span>
+          <span>Static export</span>
+        </div>
+      </section>
+
+      <section className="preview-wrap" aria-label="Editor preview">
+        <div className="browser-frame">
+          <div className="browser-bar">
+            <div className="browser-dots" aria-hidden="true">
+              <span className="red" />
+              <span className="yellow" />
+              <span className="green" />
+            </div>
+            <div className="url-bar">webception.app/canvas/my-project</div>
+          </div>
+          <div className="browser-content">
+            <div className="sidebar-mock">
+              {[0, 1, 2, 3].map((item) => (
+                <span className={`sidebar-item ${item === 0 ? 'active' : ''}`} key={item}>
+                  <i />
+                  <b />
+                </span>
+              ))}
+            </div>
+            <div className="canvas-mock">
+              <div className="canvas-hero-block">
+                <span />
+                <span />
+              </div>
+              <div className="canvas-row">
+                <span />
+                <span />
+                <span />
+              </div>
+              <div className="canvas-footer" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div className="landing-divider" />
+
+      <section className="features" id="features">
+        <p className="section-label">Why Webception</p>
+        <h2>Built for people who want to publish, not wrestle with tools.</h2>
+        <div className="features-grid">
+          <FeatureCard
+            icon="cloud"
+            title="Projects that follow you"
+            text="Start on one browser and pick up on another. Your pages, layout, and edits stay tied to your account."
+          />
+          <FeatureCard
+            icon="canvas"
+            title="A canvas that stays flexible"
+            text="Move, resize, layer, and tune blocks directly on the page without being trapped in rigid template rows."
+          />
+          <FeatureCard
+            icon="export"
+            title="Clean export when it is done"
+            text="Download a static site package you can host anywhere, with no builder lock-in once your page is ready."
+          />
+        </div>
+      </section>
+
+      <footer className="landing-footer">
+        <span>© 2026 Webception</span>
+        <nav aria-label="Footer">
+          <a href="/login">Log in</a>
+          <a href="/signup">Sign up</a>
+          <a href="mailto:support@webception.app">Support</a>
+        </nav>
+      </footer>
+    </main>
+  )
+}
+
+function AuthPage({
+  mode,
+  configured,
+  busy,
+  message,
+  onSignIn,
+  onSignUp,
+}: {
+  mode: 'login' | 'signup'
+  configured: boolean
+  busy: boolean
+  message: string
+  onSignIn: (email: string, password: string) => void
+  onSignUp: (email: string, password: string) => void
+}) {
+  const isLogin = mode === 'login'
+
+  return (
+    <main className="auth-page">
+      <nav className="landing-nav" aria-label="Account navigation">
+        <a className="landing-brand" href="/" aria-label="Webception home">
+          <LogoMark />
+          <strong>Webception</strong>
+        </a>
+        <a className="landing-link secondary" href={isLogin ? '/signup' : '/login'}>
+          {isLogin ? 'Create account' : 'Log in'}
+        </a>
+      </nav>
+
+      <section className="auth-page-grid">
+        <div className="auth-page-copy">
+          <span>{isLogin ? 'Welcome back' : 'Start building'}</span>
+          <h1>{isLogin ? 'Log in to your dashboard.' : 'Create your Webception account.'}</h1>
+          <p>
+            {isLogin
+              ? 'Open saved projects, continue editing, and export your next site from the same online studio.'
+              : 'Save projects online, edit from any browser, and publish a clean static site when it is ready.'}
+          </p>
+        </div>
+        <section className="auth-page-card" aria-label={isLogin ? 'Login form' : 'Signup form'}>
+          <div className="auth-page-card-header">
+            <span>{isLogin ? 'Log in' : 'Sign up'}</span>
+            <strong>{isLogin ? 'Continue to Webception' : 'Create your account'}</strong>
+          </div>
+          <AuthForm
+            configured={configured}
+            busy={busy}
+            message={message}
+            onSignIn={onSignIn}
+            onSignUp={onSignUp}
+            fixedMode={mode}
+          />
+          <p className="auth-page-switch">
+            {isLogin ? 'No account yet?' : 'Already have an account?'}{' '}
+            <a href={isLogin ? '/signup' : '/login'}>{isLogin ? 'Sign up' : 'Log in'}</a>
+          </p>
+        </section>
+      </section>
+    </main>
+  )
+}
+
+function FeatureCard({ icon, title, text }: { icon: 'cloud' | 'canvas' | 'export'; title: string; text: string }) {
+  return (
+    <article className="feature-card">
+      <div className="feature-icon">
+        {icon === 'cloud' && (
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6.5 18.5h10.8a4 4 0 0 0 .5-8 6.4 6.4 0 0 0-12.2 1.4 3.3 3.3 0 0 0 .4 6.6Z" />
+          </svg>
+        )}
+        {icon === 'canvas' && (
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="2.5" />
+            <path d="M9 4v16M4 9h5M4 15h5" />
+          </svg>
+        )}
+        {icon === 'export' && (
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 4v10M8 10l4 4 4-4" />
+            <path d="M5 15v3.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V15" />
+          </svg>
+        )}
+      </div>
+      <h3>{title}</h3>
+      <p>{text}</p>
+    </article>
+  )
+}
+
+function CloudProjectControls({
+  user,
+  projects,
+  activeProjectId,
+  status,
+  busy,
+  onOpenAuth,
+  onOpenDashboard,
+  onProjectChange,
+  onNewProject,
+  onDeleteProject,
+  onSignOut,
+}: {
+  user: User | null
+  projects: CloudProject[]
+  activeProjectId: string
+  status: string
+  busy: boolean
+  onOpenAuth: () => void
+  onOpenDashboard: () => void
+  onProjectChange: (id: string) => void
+  onNewProject: () => void
+  onDeleteProject: () => void
+  onSignOut: () => void
+}) {
+  if (!user) {
+    return (
+      <section className="cloud-controls" aria-label="Account controls">
+        <button type="button" className="cloud-primary" onClick={onOpenAuth}>
+          Log in
+        </button>
+        <span>{status}</span>
+      </section>
+    )
+  }
+
+  return (
+    <section className="cloud-controls" aria-label="Cloud project controls">
+      <button type="button" className="cloud-primary" onClick={onOpenDashboard}>
+        Dashboard
+      </button>
+      <button type="button" onClick={() => onProjectChange(activeProjectId)} disabled={busy || !activeProjectId}>
+        Open
+      </button>
+      <button type="button" onClick={onNewProject} disabled={busy}>New</button>
+      <button type="button" onClick={onDeleteProject} disabled={busy || projects.length <= 1} aria-label="Delete current project">Delete</button>
+      <span>{projects.find((item) => item.id === activeProjectId)?.name ?? status}</span>
+      <button type="button" onClick={onSignOut} aria-label="Sign out">
+        {user.email?.split('@')[0] ?? 'Account'}
+      </button>
+    </section>
+  )
+}
+
+function ProjectDashboard({
+  user,
+  projects,
+  activeProjectId,
+  status,
+  busy,
+  onProjectOpen,
+  onNewProject,
+  onDeleteProject,
+  onSignOut,
+  onClose,
+}: {
+  user: User
+  projects: CloudProject[]
+  activeProjectId: string
+  status: string
+  busy: boolean
+  onProjectOpen: (id: string) => void
+  onNewProject: () => void
+  onDeleteProject: () => void
+  onSignOut: () => void
+  onClose: () => void
+}) {
+  const activeProject = projects.find((item) => item.id === activeProjectId)
+
+  return (
+    <div className="auth-backdrop dashboard-backdrop" role="presentation">
+      <section className="project-dashboard" role="dialog" aria-modal="true" aria-label="Project dashboard">
+        <header className="dashboard-header">
+          <div>
+            <span>Webception Dashboard</span>
+            <strong>{activeProject?.name ?? 'Projects'}</strong>
+            <small>{user.email}</small>
+          </div>
+          <div className="dashboard-header-actions">
+            <button type="button" onClick={onNewProject} disabled={busy}>New project</button>
+            <button type="button" onClick={onSignOut}>Sign out</button>
+            <button type="button" onClick={onClose} aria-label="Close dashboard">x</button>
+          </div>
+        </header>
+
+        <section className="dashboard-summary" aria-label="Account summary">
+          <div>
+            <span>Projects</span>
+            <strong>{projects.length}</strong>
+          </div>
+          <div>
+            <span>Sync</span>
+            <strong>{status}</strong>
+          </div>
+          <div>
+            <span>Current</span>
+            <strong>{activeProject?.name ?? 'None'}</strong>
+          </div>
+        </section>
+
+        <section className="dashboard-projects" aria-label="Saved projects">
+          {projects.map((item) => (
+            <article className={item.id === activeProjectId ? 'active' : ''} key={item.id}>
+              <div>
+                <strong>{item.name}</strong>
+                <span>Updated {formatProjectDate(item.updated_at)}</span>
+              </div>
+              <div className="project-card-actions">
+                <button type="button" className="cloud-primary" disabled={busy} onClick={() => onProjectOpen(item.id)}>
+                  Open
+                </button>
+                {item.id === activeProjectId && (
+                  <button type="button" disabled={busy || projects.length <= 1} onClick={onDeleteProject}>
+                    Delete
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+        </section>
+      </section>
+    </div>
+  )
+}
+
+function AuthDialog({
+  configured,
+  busy,
+  message,
+  onSignIn,
+  onSignUp,
+  onClose,
+}: {
+  configured: boolean
+  busy: boolean
+  message: string
+  onSignIn: (email: string, password: string) => void
+  onSignUp: (email: string, password: string) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="auth-backdrop" role="presentation">
+      <section className="auth-dialog" role="dialog" aria-modal="true" aria-label="Account login">
+        <div className="auth-header">
+          <div>
+            <strong>Log in to Webception</strong>
+            <span>Save and switch projects from any browser.</span>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close login">x</button>
+        </div>
+        <AuthForm
+          configured={configured}
+          busy={busy}
+          message={message}
+          onSignIn={onSignIn}
+          onSignUp={onSignUp}
+        />
+      </section>
+    </div>
+  )
+}
+
+function AuthForm({
+  configured,
+  busy,
+  message,
+  onSignIn,
+  onSignUp,
+  fixedMode,
+}: {
+  configured: boolean
+  busy: boolean
+  message: string
+  onSignIn: (email: string, password: string) => void
+  onSignUp: (email: string, password: string) => void
+  fixedMode?: 'login' | 'signup'
+}) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [mode, setMode] = useState<'login' | 'signup'>('login')
+  const activeMode = fixedMode ?? mode
+  const trimmedEmail = email.trim().toLowerCase()
+  const hasEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)
+  const hasLongPassword = password.length >= passwordMinLength
+  const canSubmit = configured && !busy && hasEmail && hasLongPassword
+
+  function submitAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!canSubmit) return
+    if (activeMode === 'login') {
+      onSignIn(trimmedEmail, password)
+      return
+    }
+    onSignUp(trimmedEmail, password)
+  }
+
+  return (
+    <form className="auth-form" onSubmit={submitAuth}>
+        {!fixedMode && (
+          <div className="auth-mode" aria-label="Choose login or signup">
+            <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>
+              Log in
+            </button>
+            <button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => setMode('signup')}>
+              Sign up
+            </button>
+          </div>
+        )}
+
+        {!configured && (
+          <p className="auth-warning">
+            Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable Supabase login.
+          </p>
+        )}
+
+        <label>
+          <span>Email</span>
+          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" autoComplete="email" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={`${passwordMinLength}+ characters`} autoComplete={activeMode === 'login' ? 'current-password' : 'new-password'} />
+          <small className={hasLongPassword ? 'valid' : ''}>
+            Use at least {passwordMinLength} characters.
+          </small>
+        </label>
+
+        <button type="submit" className="auth-submit cloud-primary" disabled={!canSubmit}>
+          {busy ? 'Working...' : activeMode === 'login' ? 'Log in' : 'Create account'}
+        </button>
+
+        {message && <p className="auth-message">{message}</p>}
+    </form>
   )
 }
 
@@ -1156,12 +2049,14 @@ function ElementContent({ element }: { element: BuilderElement }) {
       )
     case 'button':
       return <button type="button" className="button-render">{element.text || element.action}</button>
-    case 'image':
-      return <img className="image-render" src={element.src} alt="" />
+    case 'image': {
+      const src = safeMediaUrl(element.src)
+      return src ? <img className="image-render" src={src} alt="" /> : <div className="image-render image-placeholder" />
+    }
     case 'gallery':
       return (
         <div className="gallery-render">
-          {[1, 2, 3].map((item) => <img key={item} src={`https://picsum.photos/seed/webception-gallery-${item}/500/380`} alt="" />)}
+          {[1, 2, 3].map((item) => <span key={item} />)}
         </div>
       )
     case 'video':
@@ -1421,18 +2316,6 @@ function resizePlacement(start: Placement, handle: ResizeHandle, dx: number, dy:
   }
 }
 
-function loadProject(): BuilderProject {
-  try {
-    const saved = localStorage.getItem(storageKey)
-    if (!saved) return cloneProject(starterProject)
-    const parsed = JSON.parse(saved) as BuilderProject
-    if (!Array.isArray(parsed.elements)) return cloneProject(starterProject)
-    return parsed
-  } catch {
-    return cloneProject(starterProject)
-  }
-}
-
 function createId(kind: ElementKind) {
   return `${kind}-${crypto.randomUUID().slice(0, 8)}`
 }
@@ -1570,7 +2453,7 @@ function defaultCopy(kind: ElementKind) {
     text: { name: 'Text', title: 'Text block', text: 'Write direct copy that explains what your site does.', subtext: '', action: '', src: '' },
     richText: { name: 'Rich text', title: 'Long-form section', text: 'Use this block for about pages, product notes, updates, or project writeups.', subtext: '', action: '', src: '' },
     button: { name: 'Button', title: 'Button', text: 'Join the list', subtext: '', action: 'Join the list', src: '' },
-    image: { name: 'Image', title: 'Image', text: '', subtext: '', action: '', src: 'https://picsum.photos/seed/webception-image/900/900' },
+    image: { name: 'Image', title: 'Image', text: '', subtext: '', action: '', src: '' },
     gallery: { name: 'Gallery', title: 'Gallery', text: 'Three image layout', subtext: '', action: '', src: '' },
     card: { name: 'Card', title: 'Fast edits', text: 'Tune every visual property without leaving the canvas.', subtext: '', action: '', src: '' },
     cardGrid: { name: 'Card grid', title: 'Feature cards', text: 'Reusable, editable, and export-ready.', subtext: '', action: '', src: '' },
@@ -1615,6 +2498,26 @@ function cloneProject(project: BuilderProject): BuilderProject {
   return JSON.parse(JSON.stringify(project)) as BuilderProject
 }
 
+function normalizeCloudProject(project: BuilderProject, fallbackName: string): BuilderProject {
+  return {
+    name: project?.name || fallbackName || 'Untitled',
+    themeMode: project?.themeMode ?? 'system',
+    pageBackground: project?.pageBackground || '#f7f8f3',
+    elements: Array.isArray(project?.elements) ? project.elements : [],
+  }
+}
+
+function formatProjectDate(value: string) {
+  const timestamp = Date.parse(value)
+  if (Number.isNaN(timestamp)) return 'recently'
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(timestamp))
+}
+
 function cloneElement(element: BuilderElement): BuilderElement {
   return JSON.parse(JSON.stringify(element)) as BuilderElement
 }
@@ -1627,9 +2530,6 @@ function buildExport(project: BuilderProject) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(project.name)} | Built in Webception</title>
-  <link rel="preconnect" href="https://api.fontshare.com" />
-  <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
-  <link href="https://fonts.googleapis.com/css2?family=Hind:wght@400;500;600;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -1642,7 +2542,7 @@ ${elements.map((element) => exportElementHtml(element)).join('\n')}
 
   const css = `:root { --page-bg: ${project.pageBackground}; }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--page-bg); color: #182018; font-family: Satoshi, system-ui, sans-serif; }
+body { margin: 0; background: var(--page-bg); color: #182018; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .page { position: relative; width: min(1200px, 100%); min-height: 820px; margin: 0 auto; overflow: hidden; }
 .wc-el { position: absolute; display: grid; overflow: hidden; }
 .wc-el h1, .wc-el h2, .wc-el p { margin: 0; }
@@ -1652,7 +2552,7 @@ body { margin: 0; background: var(--page-bg); color: #182018; font-family: Satos
 .wc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: 100%; }
 .wc-grid section { padding: 14px; border: 1px solid rgba(20, 29, 20, .1); border-radius: 12px; background: rgba(255,255,255,.42); }
 .wc-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.wc-gallery img { border-radius: 12px; }
+.wc-gallery span, .wc-image-placeholder { border-radius: 12px; background: linear-gradient(135deg, rgba(36, 81, 58, .12), rgba(116, 170, 134, .24)), repeating-linear-gradient(45deg, rgba(36, 81, 58, .12) 0 10px, transparent 10px 20px); }
 .wc-form { display: grid; gap: 10px; width: 100%; }
 .wc-form input, .wc-form textarea { border: 1px solid rgba(20,29,20,.16); border-radius: 10px; padding: 11px; font: inherit; }
 .wc-divider { width: 100%; height: 2px; background: currentColor; align-self: center; }
@@ -1696,8 +2596,11 @@ function exportContent(element: BuilderElement) {
   if (element.kind === 'navbar') return `<div class="wc-navbar"><strong>${escapeHtml(element.title)}</strong><span>Work Pricing Contact</span><button>${escapeHtml(element.action)}</button></div>`
   if (element.kind === 'hero') return `<h1>${escapeHtml(element.title)}</h1><p>${escapeHtml(element.text)}</p><small>${escapeHtml(element.subtext)}</small><button>${escapeHtml(element.action)}</button>`
   if (element.kind === 'button') return `<button class="wc-button">${escapeHtml(element.text || element.action)}</button>`
-  if (element.kind === 'image') return `<img src="${escapeHtml(element.src)}" alt="" />`
-  if (element.kind === 'gallery') return `<div class="wc-gallery"><img src="https://picsum.photos/seed/export-1/500/380" alt="" /><img src="https://picsum.photos/seed/export-2/500/380" alt="" /><img src="https://picsum.photos/seed/export-3/500/380" alt="" /></div>`
+  if (element.kind === 'image') {
+    const src = safeMediaUrl(element.src)
+    return src ? `<img src="${escapeHtml(src)}" alt="" />` : '<div class="wc-image-placeholder"></div>'
+  }
+  if (element.kind === 'gallery') return '<div class="wc-gallery"><span></span><span></span><span></span></div>'
   if (element.kind === 'divider' || element.kind === 'line') return `<div class="wc-divider"></div>`
   if (element.kind === 'contact') return `<form class="wc-form"><input placeholder="Name" /><input placeholder="Email" /><textarea placeholder="Message"></textarea><button>${escapeHtml(element.action)}</button></form>`
   if (['rect', 'circle', 'blob', 'spacer'].includes(element.kind)) return ''
@@ -1730,6 +2633,51 @@ function exportElementCss(element: BuilderElement, device: DeviceMode = 'desktop
 
 function escapeHtml(value: string) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;')
+}
+
+function safeMediaUrl(value: string) {
+  if (!value.trim()) return ''
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' ? url.toString() : ''
+  } catch {
+    return ''
+  }
+}
+
+function readAuthRedirectNotice(): AuthRedirectNotice | null {
+  const params = new URLSearchParams(window.location.search)
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  const error = params.get('error_description') || hashParams.get('error_description') || params.get('error') || hashParams.get('error')
+
+  if (error) {
+    return {
+      kind: 'error',
+      title: 'Confirmation link did not work',
+      text: error.replaceAll('+', ' '),
+    }
+  }
+
+  const type = params.get('type') || hashParams.get('type')
+  if (params.get('confirmed') === '1' || type === 'signup' || type === 'email' || params.has('code') || hashParams.has('access_token')) {
+    return {
+      kind: 'confirmed',
+      title: 'Account confirmed',
+      text: 'Your Webception account is ready. Head to your dashboard to create or open a project.',
+    }
+  }
+
+  return null
+}
+
+function cleanupAuthRedirectUrl() {
+  window.history.replaceState(null, '', window.location.pathname || '/')
+}
+
+function readPublicRoute(): PublicRoute {
+  if (window.location.pathname === '/login') return '/login'
+  if (window.location.pathname === '/signup') return '/signup'
+  return '/'
 }
 
 export default App

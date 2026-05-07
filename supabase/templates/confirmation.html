@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <body style="margin:0;background:#f1f3ee;color:#192119;font-family:Inter,Arial,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f1f3ee;padding:32px 16px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:520px;background:#fbfcf8;border:1px solid #d8ded1;border-radius:18px;overflow:hidden;">
+            <tr>
+              <td style="padding:28px 28px 10px;">
+                <div style="width:46px;height:46px;border-radius:14px;background:#68b883;color:#fbfcf8;display:inline-block;text-align:center;line-height:46px;font-weight:900;font-size:20px;">//</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 28px 28px;">
+                <p style="margin:0 0 12px;color:#24513a;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;">Webception</p>
+                <h1 style="margin:0 0 12px;font-size:32px;line-height:1.05;color:#192119;">Confirm your account</h1>
+                <p style="margin:0 0 24px;color:#697266;font-size:16px;line-height:1.5;">Tap the button below to finish setting up your Webception account. After confirmation, you will land back on Webception and can head straight to your dashboard.</p>
+                <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#24513a;color:#ffffff;text-decoration:none;border-radius:12px;padding:14px 18px;font-size:15px;font-weight:800;">Confirm account</a>
+                <p style="margin:24px 0 0;color:#697266;font-size:13px;line-height:1.5;">If the button does not work, copy and paste this link into your browser:</p>
+                <p style="margin:8px 0 0;word-break:break-all;color:#24513a;font-size:13px;line-height:1.45;">{{ .ConfirmationURL }}</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
