@@ -68,6 +68,16 @@ type ElementAnimation = {
   repeat: boolean
 }
 
+type ResizeHandle =
+  | 'top-left'
+  | 'top'
+  | 'top-right'
+  | 'right'
+  | 'bottom-right'
+  | 'bottom'
+  | 'bottom-left'
+  | 'left'
+
 type BuilderElement = {
   id: string
   kind: ElementKind
@@ -93,9 +103,23 @@ type BuilderProject = {
 type DragState = {
   id: string
   mode: 'move' | 'resize'
+  handle?: ResizeHandle
   pointerX: number
   pointerY: number
   start: Placement
+}
+
+type LibraryKey = 'templates' | 'elements' | 'text' | 'media' | 'sections' | 'shapes'
+
+type PaletteItem = {
+  kind: ElementKind
+  label: string
+  detail: string
+  tags?: string[]
+  patch?: Partial<Pick<BuilderElement, 'name' | 'title' | 'text' | 'subtext' | 'action' | 'src'>> & {
+    style?: Partial<ElementStyle>
+    placement?: Partial<Placement>
+  }
 }
 
 const storageKey = 'webception-project-v2'
@@ -122,10 +146,12 @@ const animations: Array<{ value: AnimationType; label: string }> = [
 
 const paletteGroups: Array<{
   label: string
-  items: Array<{ kind: ElementKind; label: string; detail: string }>
+  key: Exclude<LibraryKey, 'templates' | 'elements'>
+  items: PaletteItem[]
 }> = [
   {
     label: 'Structure',
+    key: 'sections',
     items: [
       { kind: 'navbar', label: 'Navbar', detail: 'Brand and links' },
       { kind: 'hero', label: 'Hero', detail: 'Headline and CTA' },
@@ -136,10 +162,19 @@ const paletteGroups: Array<{
   },
   {
     label: 'Content',
+    key: 'text',
     items: [
       { kind: 'text', label: 'Text', detail: 'Short paragraph' },
       { kind: 'richText', label: 'Rich text', detail: 'Editorial block' },
       { kind: 'button', label: 'Button', detail: 'Primary action' },
+      { kind: 'badge', label: 'Badge label', detail: 'Small supporting label' },
+      { kind: 'pill', label: 'Pill tag', detail: 'Rounded metadata tag' },
+    ],
+  },
+  {
+    label: 'Media',
+    key: 'media',
+    items: [
       { kind: 'image', label: 'Image', detail: 'Single visual' },
       { kind: 'gallery', label: 'Gallery', detail: 'Three image strip' },
       { kind: 'video', label: 'Video', detail: 'Embed placeholder' },
@@ -147,6 +182,7 @@ const paletteGroups: Array<{
   },
   {
     label: 'Sections',
+    key: 'sections',
     items: [
       { kind: 'card', label: 'Card', detail: 'Compact callout' },
       { kind: 'cardGrid', label: 'Card grid', detail: 'Three feature cards' },
@@ -160,6 +196,7 @@ const paletteGroups: Array<{
   },
   {
     label: 'Shapes',
+    key: 'shapes',
     items: [
       { kind: 'rect', label: 'Rectangle', detail: 'Filled shape' },
       { kind: 'circle', label: 'Circle', detail: 'Round shape' },
@@ -171,6 +208,17 @@ const paletteGroups: Array<{
     ],
   },
 ]
+
+const libraryTabs: Array<{ key: LibraryKey; label: string }> = [
+  { key: 'templates', label: 'Templates' },
+  { key: 'elements', label: 'Elements' },
+  { key: 'text', label: 'Text' },
+  { key: 'media', label: 'Media' },
+  { key: 'sections', label: 'Sections' },
+  { key: 'shapes', label: 'Shapes' },
+]
+
+const allPaletteItems = paletteGroups.flatMap((group) => group.items)
 
 const starterProject: BuilderProject = {
   name: 'Home',
@@ -203,6 +251,9 @@ function App() {
   const [isExporting, setIsExporting] = useState(false)
   const [isPreviewing, setIsPreviewing] = useState(false)
   const [previewTick, setPreviewTick] = useState(0)
+  const [activeLibrary, setActiveLibrary] = useState<LibraryKey>('elements')
+  const [libraryQuery, setLibraryQuery] = useState('')
+  const [recentKinds, setRecentKinds] = useState<ElementKind[]>(['rect', 'circle', 'image', 'button'])
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
   const dragRef = useRef<DragState | null>(null)
 
@@ -210,6 +261,17 @@ function App() {
   const resolvedTheme = project.themeMode === 'system' ? (systemDark ? 'dark' : 'light') : project.themeMode
   const canvasSize = canvasSizes[device]
   const exportBundle = useMemo(() => buildExport(project), [project])
+  const visiblePaletteGroups = useMemo(
+    () => filterPaletteGroups(activeLibrary, libraryQuery),
+    [activeLibrary, libraryQuery],
+  )
+  const recentItems = useMemo(
+    () =>
+      recentKinds
+        .map((kind) => allPaletteItems.find((item) => item.kind === kind))
+        .filter((item): item is PaletteItem => Boolean(item)),
+    [recentKinds],
+  )
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -244,11 +306,7 @@ function App() {
       const next: Placement =
         drag.mode === 'move'
           ? { ...drag.start, x: Math.round(drag.start.x + dx), y: Math.round(drag.start.y + dy) }
-          : {
-              ...drag.start,
-              width: Math.max(32, Math.round(drag.start.width + dx)),
-              height: Math.max(24, Math.round(drag.start.height + dy)),
-            }
+          : resizePlacement(drag.start, drag.handle ?? 'bottom-right', dx, dy)
       setProject((current) => updateElementPlacement(current, drag.id, device, next, false))
       setLastSaved('Saving')
     }
@@ -265,16 +323,25 @@ function App() {
     }
   }, [device, zoom])
 
-  function addElement(kind: ElementKind) {
+  function addElement(kind: ElementKind, item?: PaletteItem) {
     const maxZ = Math.max(0, ...project.elements.map((item) => item.placement.zIndex))
     const offset = project.elements.length * 14
-    const element = makeElement(kind, {
+    const elementBase = makeElement(kind, {
       x: 90 + (offset % 180),
       y: 120 + (offset % 260),
       zIndex: maxZ + 1,
+      ...item?.patch?.placement,
     })
+    const element = {
+      ...elementBase,
+      ...item?.patch,
+      name: item?.label ?? item?.patch?.name ?? elementBase.name,
+      style: { ...elementBase.style, ...item?.patch?.style },
+      placement: { ...elementBase.placement, ...item?.patch?.placement },
+    }
     commitProject((current) => ({ ...current, elements: [...current.elements, element] }))
     setSelectedId(element.id)
+    setRecentKinds((kinds) => [kind, ...kinds.filter((item) => item !== kind)].slice(0, 8))
   }
 
   function updateElement(patch: Partial<BuilderElement>) {
@@ -379,13 +446,15 @@ function App() {
     setSelectedId(next.elements[0]?.id ?? '')
   }
 
-  function startDrag(event: React.PointerEvent, element: BuilderElement, mode: DragState['mode']) {
+  function startDrag(event: React.PointerEvent, element: BuilderElement, mode: DragState['mode'], handle?: ResizeHandle) {
     if ((event.target as HTMLElement).closest('button, input, textarea, select')) return
     event.preventDefault()
+    event.stopPropagation()
     setSelectedId(element.id)
     dragRef.current = {
       id: element.id,
       mode,
+      handle,
       pointerX: event.clientX,
       pointerY: event.clientY,
       start: resolvePlacement(element, device),
@@ -411,12 +480,8 @@ function App() {
   return (
     <main className="app-shell" data-theme={resolvedTheme}>
       <header className="topbar">
-        <div className="brand-lockup" aria-label="Webception editor">
+        <div className="brand-lockup icon-only" aria-label="Webception editor">
           <LogoMark />
-          <div>
-            <strong>Webception</strong>
-            <span>Freeform website studio</span>
-          </div>
         </div>
 
         <div className="page-control" aria-label="Current page">
@@ -431,8 +496,15 @@ function App() {
 
         <nav className="top-actions" aria-label="Editor actions">
           {(['desktop', 'tablet', 'mobile'] as const).map((mode) => (
-            <button type="button" key={mode} onClick={() => setDevice(mode)} className={device === mode ? 'active' : ''}>
-              {mode}
+            <button
+              type="button"
+              key={mode}
+              onClick={() => setDevice(mode)}
+              className={`device-action ${device === mode ? 'active' : ''}`}
+              aria-pressed={device === mode}
+            >
+              <DeviceIcon mode={mode} />
+              <span>{mode}</span>
             </button>
           ))}
           {(['system', 'light', 'dark'] as const).map((mode) => (
@@ -455,38 +527,16 @@ function App() {
       </header>
 
       <section className="workspace">
-        <aside className="left-panel" aria-label="Blocks panel">
-          <div className="panel-heading">
-            <span>Blocks</span>
-            <small>Tap to add</small>
-          </div>
-          <section className="template-list" aria-label="Templates">
-            {templates.map((template) => (
-              <button type="button" key={template.key} className="template-tile" onClick={() => applyTemplate(template.key)}>
-                <strong>{template.name}</strong>
-                <small>{template.detail}</small>
-              </button>
-            ))}
-          </section>
-          <div className="palette-scroll">
-            {paletteGroups.map((group) => (
-              <section className="palette-group" key={group.label}>
-                <h2>{group.label}</h2>
-                <div className="block-list">
-                  {group.items.map((item) => (
-                    <button type="button" key={item.kind} className="block-tile" onClick={() => addElement(item.kind)}>
-                      <span className={`block-icon ${item.kind}`} aria-hidden="true" />
-                      <span>
-                        <strong>{item.label}</strong>
-                        <small>{item.detail}</small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        </aside>
+        <LibrarySidebar
+          activeLibrary={activeLibrary}
+          libraryQuery={libraryQuery}
+          visiblePaletteGroups={visiblePaletteGroups}
+          recentItems={recentItems}
+          onActiveLibrary={setActiveLibrary}
+          onLibraryQuery={setLibraryQuery}
+          onAddElement={(item) => addElement(item.kind, item)}
+          onApplyTemplate={applyTemplate}
+        />
 
         <section className="canvas-stage" aria-label="Canvas">
           <div className="canvas-ruler">
@@ -517,7 +567,7 @@ function App() {
                     previewing={isPreviewing}
                     onSelect={() => setSelectedId(element.id)}
                     onPointerDown={(event) => startDrag(event, element, 'move')}
-                    onResizePointerDown={(event) => startDrag(event, element, 'resize')}
+                    onResizePointerDown={(event, handle) => startDrag(event, element, 'resize', handle)}
                   />
                 )
               })}
@@ -756,6 +806,121 @@ function Range({ label, min, max, value, onChange }: { label: string; min: numbe
   )
 }
 
+function LibrarySidebar({
+  activeLibrary,
+  libraryQuery,
+  visiblePaletteGroups,
+  recentItems,
+  onActiveLibrary,
+  onLibraryQuery,
+  onAddElement,
+  onApplyTemplate,
+}: {
+  activeLibrary: LibraryKey
+  libraryQuery: string
+  visiblePaletteGroups: typeof paletteGroups
+  recentItems: PaletteItem[]
+  onActiveLibrary: (key: LibraryKey) => void
+  onLibraryQuery: (value: string) => void
+  onAddElement: (item: PaletteItem) => void
+  onApplyTemplate: (key: (typeof templates)[number]['key']) => void
+}) {
+  return (
+    <aside className="left-panel" aria-label="Design library">
+      <nav className="library-rail" aria-label="Library sections">
+        {libraryTabs.map((tab) => (
+          <button
+            type="button"
+            key={tab.key}
+            className={activeLibrary === tab.key ? 'active' : ''}
+            onClick={() => onActiveLibrary(tab.key)}
+            aria-pressed={activeLibrary === tab.key}
+          >
+            <LibraryIcon name={tab.key} />
+            <span>{tab.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <section className="library-pane">
+        <div className="panel-heading library-heading">
+          <span>{libraryTabs.find((tab) => tab.key === activeLibrary)?.label}</span>
+          <small>{activeLibrary === 'templates' ? 'Replace canvas' : 'Tap to add'}</small>
+        </div>
+
+        {activeLibrary !== 'templates' && (
+          <label className="library-search">
+            <span aria-hidden="true">+</span>
+            <input
+              aria-label="Search elements"
+              placeholder="Search elements"
+              value={libraryQuery}
+              onChange={(event) => onLibraryQuery(event.target.value)}
+            />
+          </label>
+        )}
+
+        <div className="library-scroll">
+          {activeLibrary === 'templates' ? (
+            <section className="template-list" aria-label="Templates">
+              {templates.map((template) => (
+                <button type="button" key={template.key} className="template-tile" onClick={() => onApplyTemplate(template.key)}>
+                  <strong>{template.name}</strong>
+                  <small>{template.detail}</small>
+                </button>
+              ))}
+            </section>
+          ) : (
+            <>
+              {!libraryQuery && recentItems.length > 0 && (
+                <section className="recent-library" aria-label="Recently used elements">
+                  <div className="library-section-title">
+                    <h2>Recently used</h2>
+                    <small>{recentItems.length}</small>
+                  </div>
+                  <div className="recent-strip">
+                    {recentItems.map((item) => (
+                      <button type="button" key={`recent-${item.kind}`} className={`recent-tile ${item.kind}`} onClick={() => onAddElement(item)} aria-label={`Add ${item.label}`}>
+                        <span className={`block-icon ${item.kind}`} aria-hidden="true" />
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <section className="category-browser" aria-label="Browse categories">
+                <div className="library-section-title">
+                  <h2>{libraryQuery ? 'Search results' : 'Browse categories'}</h2>
+                </div>
+                {visiblePaletteGroups.length ? (
+                  visiblePaletteGroups.map((group) => (
+                    <section className="palette-group" key={group.label}>
+                      <h2>{group.label}</h2>
+                      <div className="block-list">
+                        {group.items.map((item) => (
+                          <button type="button" key={`${group.label}-${item.label}-${item.kind}`} className="block-tile" onClick={() => onAddElement(item)}>
+                            <span className={`block-icon ${item.kind}`} aria-hidden="true" />
+                            <span>
+                              <strong>{item.label}</strong>
+                              <small>{item.detail}</small>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  ))
+                ) : (
+                  <p className="empty-library">No matching elements.</p>
+                )}
+              </section>
+            </>
+          )}
+        </div>
+      </section>
+    </aside>
+  )
+}
+
 function CanvasElement({
   element,
   placement,
@@ -771,7 +936,7 @@ function CanvasElement({
   previewing: boolean
   onSelect: () => void
   onPointerDown: (event: React.PointerEvent) => void
-  onResizePointerDown: (event: React.PointerEvent) => void
+  onResizePointerDown: (event: React.PointerEvent, handle: ResizeHandle) => void
 }) {
   const style = {
     left: placement.x,
@@ -810,10 +975,14 @@ function CanvasElement({
       <ElementContent element={element} />
       {selected && (
         <>
-          <span className="resize-handle top-left" />
-          <span className="resize-handle top-right" />
-          <span className="resize-handle bottom-left" />
-          <span className="resize-handle bottom-right" onPointerDown={onResizePointerDown} />
+          {(['top-left', 'top', 'top-right', 'right', 'bottom-right', 'bottom', 'bottom-left', 'left'] as const).map((handle) => (
+            <span
+              key={handle}
+              className={`resize-handle ${handle}`}
+              onPointerDown={(event) => onResizePointerDown(event, handle)}
+              aria-hidden="true"
+            />
+          ))}
         </>
       )}
     </article>
@@ -908,6 +1077,139 @@ function LogoMark() {
       <path d="M17.5 25.5 24 8h5l-6.5 17.5h-5Z" opacity=".78" />
     </svg>
   )
+}
+
+function DeviceIcon({ mode }: { mode: DeviceMode }) {
+  if (mode === 'mobile') {
+    return (
+      <svg className="device-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="8" y="3" width="8" height="18" rx="2.4" />
+        <path d="M11 18h2" />
+      </svg>
+    )
+  }
+
+  if (mode === 'tablet') {
+    return (
+      <svg className="device-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="6" y="3.5" width="12" height="17" rx="2.6" />
+        <path d="M11 17.5h2" />
+      </svg>
+    )
+  }
+
+  return (
+    <svg className="device-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="5" width="17" height="11" rx="1.8" />
+      <path d="M9 20h6M12 16v4" />
+    </svg>
+  )
+}
+
+function LibraryIcon({ name }: { name: LibraryKey }) {
+  if (name === 'templates') {
+    return (
+      <svg className="library-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="4" y="4" width="7" height="7" rx="1.5" />
+        <rect x="13" y="4" width="7" height="7" rx="1.5" />
+        <rect x="4" y="13" width="7" height="7" rx="1.5" />
+        <rect x="13" y="13" width="7" height="7" rx="1.5" />
+      </svg>
+    )
+  }
+
+  if (name === 'text') {
+    return (
+      <svg className="library-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M5 6h14M12 6v13M8 19h8" />
+      </svg>
+    )
+  }
+
+  if (name === 'media') {
+    return (
+      <svg className="library-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="4" y="5" width="16" height="14" rx="2" />
+        <path d="m7 16 3.4-3.4 2.4 2.4 2.2-2.8L18 16M8 9h.01" />
+      </svg>
+    )
+  }
+
+  if (name === 'sections') {
+    return (
+      <svg className="library-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M5 6h14M5 12h14M5 18h14" />
+      </svg>
+    )
+  }
+
+  if (name === 'shapes') {
+    return (
+      <svg className="library-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="8" cy="8" r="3" />
+        <path d="M14 5h5v5h-5zM6 17h12" />
+      </svg>
+    )
+  }
+
+  return (
+    <svg className="library-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  )
+}
+
+function filterPaletteGroups(activeLibrary: LibraryKey, query: string): typeof paletteGroups {
+  const cleanQuery = query.trim().toLowerCase()
+  if (activeLibrary === 'templates') return []
+
+  return paletteGroups
+    .filter((group) => activeLibrary === 'elements' || group.key === activeLibrary)
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => {
+        if (!cleanQuery) return true
+        return [item.label, item.detail, item.kind, ...(item.tags ?? [])].join(' ').toLowerCase().includes(cleanQuery)
+      }),
+    }))
+    .filter((group) => group.items.length > 0)
+}
+
+function resizePlacement(start: Placement, handle: ResizeHandle, dx: number, dy: number): Placement {
+  const minWidth = 32
+  const minHeight = 24
+  const originalRight = start.x + start.width
+  const originalBottom = start.y + start.height
+  let x = start.x
+  let y = start.y
+  let width = start.width
+  let height = start.height
+
+  if (handle.includes('right')) {
+    width = Math.max(minWidth, start.width + dx)
+  }
+
+  if (handle.includes('left')) {
+    x = Math.min(start.x + dx, originalRight - minWidth)
+    width = originalRight - x
+  }
+
+  if (handle.includes('bottom')) {
+    height = Math.max(minHeight, start.height + dy)
+  }
+
+  if (handle.includes('top')) {
+    y = Math.min(start.y + dy, originalBottom - minHeight)
+    height = originalBottom - y
+  }
+
+  return {
+    ...start,
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  }
 }
 
 function loadProject(): BuilderProject {
@@ -1145,6 +1447,8 @@ body { margin: 0; background: var(--page-bg); color: #182018; font-family: Satos
 .wc-form { display: grid; gap: 10px; width: 100%; }
 .wc-form input, .wc-form textarea { border: 1px solid rgba(20,29,20,.16); border-radius: 10px; padding: 11px; font: inherit; }
 .wc-divider { width: 100%; height: 2px; background: currentColor; align-self: center; }
+.wc-icon { display: grid; place-items: center; }
+.wc-icon-mark { width: min(78%, 72px); height: min(78%, 72px); fill: currentColor; }
 ${elements.map((element) => exportElementCss(element)).join('\n')}
 @media (max-width: 820px) {
   .page { width: 390px; min-height: 1120px; }
@@ -1189,9 +1493,16 @@ function exportContent(element: BuilderElement) {
   if (element.kind === 'contact') return `<form class="wc-form"><input placeholder="Name" /><input placeholder="Email" /><textarea placeholder="Message"></textarea><button>${escapeHtml(element.action)}</button></form>`
   if (['rect', 'circle', 'blob', 'spacer'].includes(element.kind)) return ''
   if (['pill', 'badge'].includes(element.kind)) return escapeHtml(element.text)
-  if (element.kind === 'icon') return '<strong>W</strong>'
+  if (element.kind === 'icon') return exportLogoMark()
   if (element.kind === 'cardGrid') return `<div class="wc-grid"><section><strong>Design</strong><p>${escapeHtml(element.text)}</p></section><section><strong>Tune</strong><p>${escapeHtml(element.text)}</p></section><section><strong>Ship</strong><p>${escapeHtml(element.text)}</p></section></div>`
   return `<h2>${escapeHtml(element.title)}</h2><p>${escapeHtml(element.text)}</p>`
+}
+
+function exportLogoMark() {
+  return `<svg class="wc-icon-mark" viewBox="0 0 36 36" aria-hidden="true">
+    <path d="M7 25.5 13.5 8h5L12 25.5H7Z"></path>
+    <path d="M17.5 25.5 24 8h5l-6.5 17.5h-5Z" opacity=".78"></path>
+  </svg>`
 }
 
 function exportElementCss(element: BuilderElement, device: DeviceMode = 'desktop') {
