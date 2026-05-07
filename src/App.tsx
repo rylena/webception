@@ -109,6 +109,12 @@ type DragState = {
   start: Placement
 }
 
+type QuickMenuState = {
+  id: string
+  x: number
+  y: number
+}
+
 type LibraryKey = 'templates' | 'elements' | 'text' | 'media' | 'sections' | 'shapes'
 
 type PaletteItem = {
@@ -254,10 +260,12 @@ function App() {
   const [activeLibrary, setActiveLibrary] = useState<LibraryKey>('elements')
   const [libraryQuery, setLibraryQuery] = useState('')
   const [recentKinds, setRecentKinds] = useState<ElementKind[]>(['rect', 'circle', 'image', 'button'])
+  const [quickMenu, setQuickMenu] = useState<QuickMenuState | null>(null)
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
   const dragRef = useRef<DragState | null>(null)
 
   const selected = project.elements.find((element) => element.id === selectedId) ?? project.elements[0]
+  const quickMenuElement = quickMenu ? project.elements.find((element) => element.id === quickMenu.id) : undefined
   const resolvedTheme = project.themeMode === 'system' ? (systemDark ? 'dark' : 'light') : project.themeMode
   const canvasSize = canvasSizes[device]
   const exportBundle = useMemo(() => buildExport(project), [project])
@@ -285,6 +293,24 @@ function App() {
     const timer = window.setTimeout(() => setLastSaved('Saved locally'), 250)
     return () => window.clearTimeout(timer)
   }, [project])
+
+  useEffect(() => {
+    function closeQuickMenu(event: PointerEvent) {
+      if ((event.target as HTMLElement).closest('.quick-style-menu')) return
+      setQuickMenu(null)
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setQuickMenu(null)
+    }
+
+    window.addEventListener('pointerdown', closeQuickMenu)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('pointerdown', closeQuickMenu)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [])
 
   const commitProject = useCallback((updater: (current: BuilderProject) => BuilderProject) => {
     setLastSaved('Saving')
@@ -354,10 +380,14 @@ function App() {
 
   function updateStyle(patch: Partial<ElementStyle>) {
     if (!selected) return
+    updateStyleForElement(selected.id, patch)
+  }
+
+  function updateStyleForElement(id: string, patch: Partial<ElementStyle>) {
     commitProject((current) => ({
       ...current,
       elements: current.elements.map((element) =>
-        element.id === selected.id ? { ...element, style: { ...element.style, ...patch } } : element,
+        element.id === id ? { ...element, style: { ...element.style, ...patch } } : element,
       ),
     }))
   }
@@ -461,6 +491,17 @@ function App() {
     }
   }
 
+  function openQuickMenu(event: React.MouseEvent, element: BuilderElement) {
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedId(element.id)
+    setQuickMenu({
+      id: element.id,
+      x: Math.min(event.clientX, window.innerWidth - 292),
+      y: Math.min(event.clientY, window.innerHeight - 312),
+    })
+  }
+
   async function downloadSite() {
     setIsExporting(true)
     const zip = new JSZip()
@@ -480,10 +521,6 @@ function App() {
   return (
     <main className="app-shell" data-theme={resolvedTheme}>
       <header className="topbar">
-        <div className="brand-lockup icon-only" aria-label="Webception editor">
-          <LogoMark />
-        </div>
-
         <div className="page-control" aria-label="Current page">
           <span>Pages</span>
           <input
@@ -501,10 +538,11 @@ function App() {
               key={mode}
               onClick={() => setDevice(mode)}
               className={`device-action ${device === mode ? 'active' : ''}`}
+              title={mode}
+              aria-label={`${mode} canvas`}
               aria-pressed={device === mode}
             >
               <DeviceIcon mode={mode} />
-              <span>{mode}</span>
             </button>
           ))}
           {(['system', 'light', 'dark'] as const).map((mode) => (
@@ -513,15 +551,23 @@ function App() {
               key={mode}
               onClick={() => commitProject((current) => ({ ...current, themeMode: mode }))}
               className={project.themeMode === mode ? 'active ghost-active' : ''}
+              title={`${mode} theme`}
+              aria-label={`${mode} theme`}
             >
-              {mode}
+              <ThemeIcon mode={mode} />
             </button>
           ))}
-          <button type="button" onClick={undo} disabled={!history.length}>Undo</button>
-          <button type="button" onClick={redo} disabled={!future.length}>Redo</button>
-          <button type="button" className="secondary-action" onClick={() => setIsPreviewing((value) => !value)}>Preview</button>
-          <button type="button" className="primary-action" onClick={downloadSite} disabled={isExporting}>
-            {isExporting ? 'Exporting' : 'Download'}
+          <button type="button" onClick={undo} disabled={!history.length} title="Undo" aria-label="Undo">
+            <ToolbarIcon name="undo" />
+          </button>
+          <button type="button" onClick={redo} disabled={!future.length} title="Redo" aria-label="Redo">
+            <ToolbarIcon name="redo" />
+          </button>
+          <button type="button" className="secondary-action" onClick={() => setIsPreviewing((value) => !value)} title="Preview" aria-label="Preview">
+            <ToolbarIcon name="preview" />
+          </button>
+          <button type="button" className="primary-action" onClick={downloadSite} disabled={isExporting} title={isExporting ? 'Exporting' : 'Download'} aria-label={isExporting ? 'Exporting' : 'Download'}>
+            <ToolbarIcon name="download" />
           </button>
         </nav>
       </header>
@@ -568,6 +614,7 @@ function App() {
                     onSelect={() => setSelectedId(element.id)}
                     onPointerDown={(event) => startDrag(event, element, 'move')}
                     onResizePointerDown={(event, handle) => startDrag(event, element, 'resize', handle)}
+                    onContextMenu={(event) => openQuickMenu(event, element)}
                   />
                 )
               })}
@@ -623,6 +670,16 @@ function App() {
         </label>
         <button type="button" onClick={clearAll}>Clear all</button>
       </footer>
+
+      {quickMenuElement && quickMenu && (
+        <QuickStyleMenu
+          element={quickMenuElement}
+          x={quickMenu.x}
+          y={quickMenu.y}
+          onStyle={(patch) => updateStyleForElement(quickMenuElement.id, patch)}
+          onClose={() => setQuickMenu(null)}
+        />
+      )}
     </main>
   )
 }
@@ -806,6 +863,89 @@ function Range({ label, min, max, value, onChange }: { label: string; min: numbe
   )
 }
 
+function QuickStyleMenu({
+  element,
+  x,
+  y,
+  onStyle,
+  onClose,
+}: {
+  element: BuilderElement
+  x: number
+  y: number
+  onStyle: (patch: Partial<ElementStyle>) => void
+  onClose: () => void
+}) {
+  return (
+    <aside
+      className="quick-style-menu"
+      style={{ left: x, top: y }}
+      onPointerDown={(event) => event.stopPropagation()}
+      aria-label="Quick style controls"
+    >
+      <div className="quick-menu-title">
+        <strong>{element.name}</strong>
+        <button type="button" onClick={onClose} aria-label="Close quick style menu">x</button>
+      </div>
+
+      <div className="quick-menu-grid">
+        <label>
+          <span>Font</span>
+          <select value={element.style.fontFamily} onChange={(event) => onStyle({ fontFamily: event.target.value })}>
+            {fonts.map((font) => (
+              <option value={font} key={font}>{font}</option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          <span>Size</span>
+          <input
+            type="number"
+            min="10"
+            max="82"
+            value={element.style.fontSize}
+            onChange={(event) => onStyle({ fontSize: Number(event.target.value) })}
+          />
+        </label>
+      </div>
+
+      <input
+        className="quick-size-slider"
+        aria-label="Font size"
+        type="range"
+        min="10"
+        max="82"
+        value={element.style.fontSize}
+        onChange={(event) => onStyle({ fontSize: Number(event.target.value) })}
+      />
+
+      <div className="quick-align-row" aria-label="Text alignment">
+        {(['left', 'center', 'right'] as const).map((align) => (
+          <button type="button" key={align} className={element.style.align === align ? 'active' : ''} onClick={() => onStyle({ align })}>
+            {align}
+          </button>
+        ))}
+      </div>
+
+      <div className="quick-color-row">
+        <label>
+          <span>Text</span>
+          <input type="color" value={element.style.color} onChange={(event) => onStyle({ color: event.target.value })} />
+        </label>
+        <label>
+          <span>Fill</span>
+          <input type="color" value={element.style.background} onChange={(event) => onStyle({ background: event.target.value })} />
+        </label>
+        <label>
+          <span>Border</span>
+          <input type="color" value={element.style.borderColor} onChange={(event) => onStyle({ borderColor: event.target.value })} />
+        </label>
+      </div>
+    </aside>
+  )
+}
+
 function LibrarySidebar({
   activeLibrary,
   libraryQuery,
@@ -828,6 +968,9 @@ function LibrarySidebar({
   return (
     <aside className="left-panel" aria-label="Design library">
       <nav className="library-rail" aria-label="Library sections">
+        <div className="rail-logo" aria-label="Webception">
+          <LogoMark />
+        </div>
         {libraryTabs.map((tab) => (
           <button
             type="button"
@@ -929,6 +1072,7 @@ function CanvasElement({
   onSelect,
   onPointerDown,
   onResizePointerDown,
+  onContextMenu,
 }: {
   element: BuilderElement
   placement: Placement
@@ -937,6 +1081,7 @@ function CanvasElement({
   onSelect: () => void
   onPointerDown: (event: React.PointerEvent) => void
   onResizePointerDown: (event: React.PointerEvent, handle: ResizeHandle) => void
+  onContextMenu: (event: React.MouseEvent) => void
 }) {
   const style = {
     left: placement.x,
@@ -968,6 +1113,7 @@ function CanvasElement({
       style={style}
       onClick={onSelect}
       onPointerDown={onPointerDown}
+      onContextMenu={onContextMenu}
       tabIndex={0}
       onFocus={onSelect}
       aria-label={`${element.name} element`}
@@ -1102,6 +1248,69 @@ function DeviceIcon({ mode }: { mode: DeviceMode }) {
     <svg className="device-icon" viewBox="0 0 24 24" aria-hidden="true">
       <rect x="3.5" y="5" width="17" height="11" rx="1.8" />
       <path d="M9 20h6M12 16v4" />
+    </svg>
+  )
+}
+
+function ThemeIcon({ mode }: { mode: ThemeMode }) {
+  if (mode === 'light') {
+    return (
+      <svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.5" />
+        <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" />
+      </svg>
+    )
+  }
+
+  if (mode === 'dark') {
+    return (
+      <svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M19 15.4A7.2 7.2 0 0 1 8.6 5a7.7 7.7 0 1 0 10.4 10.4Z" />
+      </svg>
+    )
+  }
+
+  return (
+    <svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="14" rx="3" />
+      <path d="M12 5v14" />
+    </svg>
+  )
+}
+
+function ToolbarIcon({ name }: { name: 'undo' | 'redo' | 'preview' | 'download' }) {
+  if (name === 'undo') {
+    return (
+      <svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 7H5v4" />
+        <path d="M5.5 11A7 7 0 1 0 8 5.7" />
+      </svg>
+    )
+  }
+
+  if (name === 'redo') {
+    return (
+      <svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M15 7h4v4" />
+        <path d="M18.5 11A7 7 0 1 1 16 5.7" />
+      </svg>
+    )
+  }
+
+  if (name === 'download') {
+    return (
+      <svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 4v10" />
+        <path d="m8 10 4 4 4-4" />
+        <path d="M5 19h14" />
+      </svg>
+    )
+  }
+
+  return (
+    <svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M2.8 12s3.4-6 9.2-6 9.2 6 9.2 6-3.4 6-9.2 6-9.2-6-9.2-6Z" />
+      <circle cx="12" cy="12" r="2.8" />
     </svg>
   )
 }
