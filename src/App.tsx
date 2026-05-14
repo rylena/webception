@@ -293,6 +293,7 @@ function App() {
   const [isCloudBusy, setIsCloudBusy] = useState(false)
   const [isSessionLoading, setIsSessionLoading] = useState(isSupabaseConfigured)
   const [authRedirectNotice, setAuthRedirectNotice] = useState<AuthRedirectNotice | null>(() => readAuthRedirectNotice())
+  const [isPasswordResetOpen, setIsPasswordResetOpen] = useState(() => isPasswordRecoveryRedirect())
   const [publicRoute, setPublicRoute] = useState<PublicRoute>(() => readPublicRoute())
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
   const dragRef = useRef<DragState | null>(null)
@@ -427,10 +428,14 @@ function App() {
     }
 
     const redirectNotice = readAuthRedirectNotice()
+    const passwordRecovery = isPasswordRecoveryRedirect()
 
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
-      if (data.session?.user) {
+      if (passwordRecovery) {
+        setIsPasswordResetOpen(true)
+        cleanupAuthRedirectUrl()
+      } else if (data.session?.user) {
         setIsDashboardOpen(!redirectNotice)
         void loadCloudProjects(data.session.user)
       }
@@ -555,7 +560,12 @@ function App() {
     })
     setIsAuthBusy(false)
     if (error) {
-      setAuthMessage(error.message)
+      const message = error.message.toLowerCase()
+      setAuthMessage(
+        message.includes('invalid login credentials')
+          ? 'Incorrect email or password. Check your details and try again.'
+          : error.message,
+      )
       return
     }
     if (data.session?.user) {
@@ -607,6 +617,40 @@ function App() {
       return
     }
     setAuthMessage('Confirmation email sent again. Check your inbox and spam folder.')
+  }
+
+  async function requestPasswordReset(email: string) {
+    if (!supabase) return
+    setIsAuthBusy(true)
+    setAuthMessage('')
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+      redirectTo: `${window.location.origin}/login`,
+    })
+    setIsAuthBusy(false)
+    if (error) {
+      setAuthMessage(error.message)
+      return
+    }
+    setAuthMessage('Password reset email sent. Check your inbox and spam folder.')
+  }
+
+  async function updatePassword(password: string) {
+    if (!supabase) return
+    setIsAuthBusy(true)
+    setAuthMessage('')
+    const { data, error } = await supabase.auth.updateUser({ password })
+    setIsAuthBusy(false)
+    if (error) {
+      setAuthMessage(error.message)
+      return
+    }
+    setAuthMessage('')
+    setIsPasswordResetOpen(false)
+    const updatedUser = data.user ?? session?.user
+    if (updatedUser) {
+      setIsDashboardOpen(true)
+      void loadCloudProjects(updatedUser)
+    }
   }
 
   async function signOut() {
@@ -886,6 +930,16 @@ function App() {
     )
   }
 
+  if (isPasswordResetOpen) {
+    return (
+      <PasswordResetPage
+        busy={isAuthBusy}
+        message={authMessage}
+        onUpdatePassword={updatePassword}
+      />
+    )
+  }
+
   if (!user) {
     if (publicRoute === '/login' || publicRoute === '/signup') {
       return (
@@ -897,6 +951,7 @@ function App() {
           onSignIn={signIn}
           onSignUp={signUp}
           onResendConfirmation={resendConfirmation}
+          onRequestPasswordReset={requestPasswordReset}
         />
       )
     }
@@ -1110,6 +1165,7 @@ function App() {
           onSignIn={signIn}
           onSignUp={signUp}
           onResendConfirmation={resendConfirmation}
+          onRequestPasswordReset={requestPasswordReset}
           onClose={() => setIsAuthOpen(false)}
         />
       )}
@@ -1255,6 +1311,7 @@ function AuthPage({
   onSignIn,
   onSignUp,
   onResendConfirmation,
+  onRequestPasswordReset,
 }: {
   mode: 'login' | 'signup'
   configured: boolean
@@ -1263,6 +1320,7 @@ function AuthPage({
   onSignIn: (email: string, password: string) => void
   onSignUp: (email: string, password: string) => void
   onResendConfirmation: (email: string) => void
+  onRequestPasswordReset: (email: string) => void
 }) {
   const isLogin = mode === 'login'
 
@@ -1300,12 +1358,76 @@ function AuthPage({
             onSignIn={onSignIn}
             onSignUp={onSignUp}
             onResendConfirmation={onResendConfirmation}
+            onRequestPasswordReset={onRequestPasswordReset}
             fixedMode={mode}
           />
           <p className="auth-page-switch">
             {isLogin ? 'No account yet?' : 'Already have an account?'}{' '}
             <a href={isLogin ? '/signup' : '/login'}>{isLogin ? 'Sign up' : 'Log in'}</a>
           </p>
+        </section>
+      </section>
+    </main>
+  )
+}
+
+function PasswordResetPage({
+  busy,
+  message,
+  onUpdatePassword,
+}: {
+  busy: boolean
+  message: string
+  onUpdatePassword: (password: string) => void
+}) {
+  const [password, setPassword] = useState('')
+  const canSubmit = !busy && password.length >= passwordMinLength
+
+  function submitPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!canSubmit) return
+    onUpdatePassword(password)
+  }
+
+  return (
+    <main className="auth-page">
+      <nav className="landing-nav" aria-label="Password reset navigation">
+        <a className="landing-brand" href="/" aria-label="Webception home">
+          <LogoMark />
+          <strong>Webception</strong>
+        </a>
+        <a className="landing-link secondary" href="/login">Log in</a>
+      </nav>
+      <section className="auth-page-grid">
+        <div className="auth-page-copy">
+          <span>Password reset</span>
+          <h1>Choose a new password.</h1>
+          <p>Set a new password for your Webception account, then continue to your dashboard.</p>
+        </div>
+        <section className="auth-page-card" aria-label="Password reset form">
+          <div className="auth-page-card-header">
+            <span>Reset password</span>
+            <strong>Secure your account</strong>
+          </div>
+          <form className="auth-form" onSubmit={submitPassword}>
+            <label>
+              <span>New password</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder={`${passwordMinLength}+ characters`}
+                autoComplete="new-password"
+              />
+              <small className={password.length >= passwordMinLength ? 'valid' : ''}>
+                Use at least {passwordMinLength} characters.
+              </small>
+            </label>
+            <button type="submit" className="auth-submit cloud-primary" disabled={!canSubmit}>
+              {busy ? 'Updating...' : 'Update password'}
+            </button>
+            {message && <p className="auth-message">{message}</p>}
+          </form>
         </section>
       </section>
     </main>
@@ -1418,15 +1540,15 @@ function ProjectDashboard({
   onClose: () => void
 }) {
   const activeProject = projects.find((item) => item.id === activeProjectId)
+  const firstName = user.email?.split('@')[0] ?? 'there'
 
   return (
-    <div className="auth-backdrop dashboard-backdrop" role="presentation">
-      <section className="project-dashboard" role="dialog" aria-modal="true" aria-label="Project dashboard">
+      <section className="project-dashboard" aria-label="Project dashboard">
         <header className="dashboard-header">
           <div>
             <span>Webception Dashboard</span>
-            <strong>{activeProject?.name ?? 'Projects'}</strong>
-            <small>{user.email}</small>
+            <strong>Hey {firstName}, what are you building today?</strong>
+            <small>{projects.length} saved {projects.length === 1 ? 'project' : 'projects'} · {status}</small>
           </div>
           <div className="dashboard-header-actions">
             <button type="button" onClick={onNewProject} disabled={busy}>New project</button>
@@ -1451,18 +1573,54 @@ function ProjectDashboard({
         </section>
 
         <section className="dashboard-projects" aria-label="Saved projects">
+          <button type="button" className="project-create-card" onClick={onNewProject} disabled={busy}>
+            <span>+</span>
+            <strong>Start a new site</strong>
+            <small>Open a fresh Webception canvas.</small>
+          </button>
           {projects.map((item) => (
-            <article className={item.id === activeProjectId ? 'active' : ''} key={item.id}>
-              <div>
+            <article
+              className={item.id === activeProjectId ? 'active' : ''}
+              key={item.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                if (!busy) onProjectOpen(item.id)
+              }}
+              onKeyDown={(event) => {
+                if (busy) return
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onProjectOpen(item.id)
+                }
+              }}
+            >
+              <DashboardProjectPreview active={item.id === activeProjectId} />
+              <div className="project-card-meta">
                 <strong>{item.name}</strong>
                 <span>Updated {formatProjectDate(item.updated_at)}</span>
               </div>
               <div className="project-card-actions">
-                <button type="button" className="cloud-primary" disabled={busy} onClick={() => onProjectOpen(item.id)}>
+                <button
+                  type="button"
+                  className="cloud-primary"
+                  disabled={busy}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onProjectOpen(item.id)
+                  }}
+                >
                   Open
                 </button>
                 {item.id === activeProjectId && (
-                  <button type="button" disabled={busy || projects.length <= 1} onClick={onDeleteProject}>
+                  <button
+                    type="button"
+                    disabled={busy || projects.length <= 1}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onDeleteProject()
+                    }}
+                  >
                     Delete
                   </button>
                 )}
@@ -1471,6 +1629,22 @@ function ProjectDashboard({
           ))}
         </section>
       </section>
+  )
+}
+
+function DashboardProjectPreview({ active }: { active: boolean }) {
+  return (
+    <div className={`dashboard-project-preview ${active ? 'active' : ''}`} aria-hidden="true">
+      <div className="preview-mini-nav" />
+      <div className="preview-mini-hero">
+        <span />
+        <span />
+      </div>
+      <div className="preview-mini-grid">
+        <span />
+        <span />
+        <span />
+      </div>
     </div>
   )
 }
@@ -1482,6 +1656,7 @@ function AuthDialog({
   onSignIn,
   onSignUp,
   onResendConfirmation,
+  onRequestPasswordReset,
   onClose,
 }: {
   configured: boolean
@@ -1490,6 +1665,7 @@ function AuthDialog({
   onSignIn: (email: string, password: string) => void
   onSignUp: (email: string, password: string) => void
   onResendConfirmation: (email: string) => void
+  onRequestPasswordReset: (email: string) => void
   onClose: () => void
 }) {
   return (
@@ -1509,6 +1685,7 @@ function AuthDialog({
           onSignIn={onSignIn}
           onSignUp={onSignUp}
           onResendConfirmation={onResendConfirmation}
+          onRequestPasswordReset={onRequestPasswordReset}
         />
       </section>
     </div>
@@ -1522,6 +1699,7 @@ function AuthForm({
   onSignIn,
   onSignUp,
   onResendConfirmation,
+  onRequestPasswordReset,
   fixedMode,
 }: {
   configured: boolean
@@ -1530,6 +1708,7 @@ function AuthForm({
   onSignIn: (email: string, password: string) => void
   onSignUp: (email: string, password: string) => void
   onResendConfirmation: (email: string) => void
+  onRequestPasswordReset: (email: string) => void
   fixedMode?: 'login' | 'signup'
 }) {
   const [email, setEmail] = useState('')
@@ -1541,6 +1720,7 @@ function AuthForm({
   const hasLongPassword = password.length >= passwordMinLength
   const canSubmit = configured && !busy && hasEmail && hasLongPassword
   const canResendConfirmation = configured && !busy && hasEmail
+  const canRequestPasswordReset = configured && !busy && hasEmail
 
   function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1587,14 +1767,25 @@ function AuthForm({
           {busy ? 'Working...' : activeMode === 'login' ? 'Log in' : 'Create account'}
         </button>
 
-        <button
-          type="button"
-          className="auth-resend"
-          disabled={!canResendConfirmation}
-          onClick={() => onResendConfirmation(trimmedEmail)}
-        >
-          Resend confirmation email
-        </button>
+        {activeMode === 'login' ? (
+          <button
+            type="button"
+            className="auth-secondary-action"
+            disabled={!canRequestPasswordReset}
+            onClick={() => onRequestPasswordReset(trimmedEmail)}
+          >
+            Forgot password?
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="auth-secondary-action"
+            disabled={!canResendConfirmation}
+            onClick={() => onResendConfirmation(trimmedEmail)}
+          >
+            Resend confirmation email
+          </button>
+        )}
 
         {message && <p className="auth-message">{message}</p>}
     </form>
@@ -2676,6 +2867,7 @@ function readAuthRedirectNotice(): AuthRedirectNotice | null {
   const params = new URLSearchParams(window.location.search)
   const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
   const error = params.get('error_description') || hashParams.get('error_description') || params.get('error') || hashParams.get('error')
+  const type = params.get('type') || hashParams.get('type')
 
   if (error) {
     return {
@@ -2685,7 +2877,8 @@ function readAuthRedirectNotice(): AuthRedirectNotice | null {
     }
   }
 
-  const type = params.get('type') || hashParams.get('type')
+  if (type === 'recovery') return null
+
   if (params.get('confirmed') === '1' || type === 'signup' || type === 'email' || params.has('code') || hashParams.has('access_token')) {
     return {
       kind: 'confirmed',
@@ -2695,6 +2888,12 @@ function readAuthRedirectNotice(): AuthRedirectNotice | null {
   }
 
   return null
+}
+
+function isPasswordRecoveryRedirect() {
+  const params = new URLSearchParams(window.location.search)
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  return params.get('type') === 'recovery' || hashParams.get('type') === 'recovery'
 }
 
 function cleanupAuthRedirectUrl() {
