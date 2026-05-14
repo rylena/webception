@@ -2477,7 +2477,7 @@ select:focus-visible,
 
 .features h2 {
   max-width: 680px;
-  margin: 0 0 52px;
+  margin: 0;
   color: var(--ink);
   font-family:
     Inter, "Avenir Next", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont,
@@ -2486,6 +2486,15 @@ select:focus-visible,
   font-weight: 760;
   line-height: 1.15;
   letter-spacing: 0;
+}
+
+.features-intro {
+  max-width: 640px;
+  margin: 18px 0 52px;
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 430;
+  line-height: 1.62;
 }
 
 .features-grid {

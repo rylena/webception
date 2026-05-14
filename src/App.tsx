@@ -1145,10 +1145,9 @@ function LandingPage() {
         </a>
         <div className="landing-nav-menu" aria-label="Landing sections">
           <a href="#features">About</a>
-          <a href="https://rylena.github.io/PortfolioWebsite/" target="_blank" rel="noreferrer">Creator</a>
+          <a href="https://www.google.com/search?q=rylen+anil&ie=UTF-8" target="_blank" rel="noreferrer">Creator</a>
           <a href="https://rylena.github.io/PortfolioWebsite/#contact" target="_blank" rel="noreferrer">Contact</a>
-          <a href="https://github.com/rylena" target="_blank" rel="noreferrer">GitHub</a>
-          <a href="https://linkedin.com/in/rylen-anil-perumkannaril" target="_blank" rel="noreferrer">LinkedIn</a>
+          <a href="https://github.com/rylena/webception" target="_blank" rel="noreferrer">GitHub</a>
         </div>
         <div className="landing-nav-actions">
           <a className="landing-link secondary" href="/login">Log in</a>
@@ -1190,8 +1189,12 @@ function LandingPage() {
       <div className="landing-divider" />
 
       <section className="features" id="features">
-        <p className="section-label">Why Webception</p>
-        <h2>Built for people who want to publish, not wrestle with tools.</h2>
+        <p className="section-label">About Webception</p>
+        <h2>A focused website studio for turning rough ideas into pages you can actually ship.</h2>
+        <p className="features-intro">
+          Start with a visual canvas, move sections exactly where they need to go, keep every project saved online,
+          and export a static site when the design is ready.
+        </p>
         <div className="features-grid">
           <FeatureCard
             icon="cloud"
