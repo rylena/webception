@@ -264,6 +264,8 @@ const templates = [
   { key: 'event', name: 'Event', detail: 'Hack night signup' },
 ] as const
 
+type TemplateKey = (typeof templates)[number]['key']
+
 const passwordMinLength = 8
 type PublicRoute = '/' | '/login' | '/signup'
 
@@ -700,6 +702,46 @@ function App() {
     setIsCloudBusy(false)
   }
 
+  async function createSampleProject(key: TemplateKey) {
+    if (!supabase || !user) return
+    setIsCloudBusy(true)
+    cloudSaveReadyRef.current = false
+    const sample = templates.find((item) => item.key === key)
+    const nextProject = {
+      ...makeTemplateProject(key),
+      name: sample ? `${sample.name} sample` : 'Sample site',
+    }
+    const { data, error } = await supabase
+      .from('builder_projects')
+      .insert({
+        user_id: user.id,
+        name: nextProject.name,
+        data: nextProject,
+      })
+      .select('id,name,updated_at,data')
+      .single()
+
+    if (error) {
+      setAuthMessage(error.message)
+      setCloudStatus('Sample create failed')
+      setIsCloudBusy(false)
+      return
+    }
+
+    const created = data as CloudProjectRow
+    setCloudProjects((items) => [{ id: created.id, name: created.name, updated_at: created.updated_at }, ...items])
+    setActiveCloudProjectId(created.id)
+    setProject(normalizeCloudProject(created.data, created.name))
+    setSelectedId(created.data.elements?.[0]?.id ?? '')
+    setCloudStatus('Cloud synced')
+    setLastSaved('Cloud synced')
+    setIsDashboardOpen(false)
+    window.setTimeout(() => {
+      cloudSaveReadyRef.current = true
+    }, 0)
+    setIsCloudBusy(false)
+  }
+
   async function openCloudProject(id: string) {
     if (!supabase || !user || id === activeCloudProjectId) return
     setIsCloudBusy(true)
@@ -804,7 +846,7 @@ function App() {
     setSelectedId(starterProject.elements[0].id)
   }
 
-  function applyTemplate(key: (typeof templates)[number]['key']) {
+  function applyTemplate(key: TemplateKey) {
     if (!window.confirm(`Replace the canvas with the ${key} template?`)) return
     const next = makeTemplateProject(key)
     commitProject(() => next)
@@ -972,6 +1014,7 @@ function App() {
           busy={isCloudBusy}
           onProjectOpen={openCloudProject}
           onNewProject={createCloudProject}
+          onSampleProject={createSampleProject}
           onDeleteProject={deleteCloudProject}
           onSignOut={signOut}
           onClose={() => setIsDashboardOpen(false)}
@@ -1179,6 +1222,7 @@ function App() {
           busy={isCloudBusy}
           onProjectOpen={openCloudProject}
           onNewProject={createCloudProject}
+          onSampleProject={createSampleProject}
           onDeleteProject={deleteCloudProject}
           onSignOut={signOut}
           onClose={() => setIsDashboardOpen(false)}
@@ -1524,6 +1568,7 @@ function ProjectDashboard({
   busy,
   onProjectOpen,
   onNewProject,
+  onSampleProject,
   onDeleteProject,
   onSignOut,
   onClose,
@@ -1535,6 +1580,7 @@ function ProjectDashboard({
   busy: boolean
   onProjectOpen: (id: string) => void
   onNewProject: () => void
+  onSampleProject: (key: TemplateKey) => void
   onDeleteProject: () => void
   onSignOut: () => void
   onClose: () => void
@@ -1569,6 +1615,29 @@ function ProjectDashboard({
           <div>
             <span>Current</span>
             <strong>{activeProject?.name ?? 'None'}</strong>
+          </div>
+        </section>
+
+        <section className="dashboard-samples" aria-label="Sample sites">
+          <div className="dashboard-section-heading">
+            <span>Sample sites</span>
+            <strong>Check out a ready-made starting point.</strong>
+          </div>
+          <div className="sample-site-grid">
+            {templates.map((sample) => (
+              <button
+                type="button"
+                className={`sample-site-card ${sample.key}`}
+                key={sample.key}
+                onClick={() => onSampleProject(sample.key)}
+                disabled={busy}
+              >
+                <DashboardSamplePreview kind={sample.key} />
+                <strong>{sample.name}</strong>
+                <span>{sample.detail}</span>
+                <small>Open sample</small>
+              </button>
+            ))}
           </div>
         </section>
 
@@ -1629,6 +1698,17 @@ function ProjectDashboard({
           ))}
         </section>
       </section>
+  )
+}
+
+function DashboardSamplePreview({ kind }: { kind: TemplateKey }) {
+  return (
+    <div className={`dashboard-sample-preview ${kind}`} aria-hidden="true">
+      <span />
+      <span />
+      <span />
+      <span />
+    </div>
   )
 }
 
