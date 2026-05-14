@@ -4,6 +4,7 @@ import type { FormEvent } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import './App.css'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
+import landingUiImage from './assets/landing-ui.png'
 
 type DeviceMode = 'desktop' | 'tablet' | 'mobile'
 type ThemeMode = 'system' | 'light' | 'dark'
@@ -1142,6 +1143,13 @@ function LandingPage() {
           <LogoMark />
           <strong>Webception</strong>
         </a>
+        <div className="landing-nav-menu" aria-label="Landing sections">
+          <a href="#features">About</a>
+          <a href="https://rylena.github.io/PortfolioWebsite/" target="_blank" rel="noreferrer">Creator</a>
+          <a href="https://rylena.github.io/PortfolioWebsite/#contact" target="_blank" rel="noreferrer">Contact</a>
+          <a href="https://github.com/rylena" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://linkedin.com/in/rylen-anil-perumkannaril" target="_blank" rel="noreferrer">LinkedIn</a>
+        </div>
         <div className="landing-nav-actions">
           <a className="landing-link secondary" href="/login">Log in</a>
           <a className="landing-link primary" href="/signup">Start building</a>
@@ -1149,60 +1157,34 @@ function LandingPage() {
       </nav>
 
       <section className="landing-hero">
-        <div className="hero-badge">
-          <span />
-          Online website builder
+        <div className="landing-copy">
+          <h1>Build websites on a real canvas.</h1>
+          <p>
+            Webception gives every project a focused studio: design the page, save it to your account,
+            and export clean static files when it is ready to publish.
+          </p>
+          <div className="hero-cta">
+            <a className="btn-primary" href="/signup">Create free account</a>
+            <a className="btn-secondary" href="#features">See how it works</a>
+          </div>
+          <small>No credit card required. Free forever on one project.</small>
         </div>
-        <h1>Design, save, and <em>ship</em><br />from one studio.</h1>
-        <p>
-          Webception keeps every project in your account so you can start a page,
-          return later, and export a clean static site the moment it is ready.
-        </p>
-        <div className="hero-cta">
-          <a className="btn-primary" href="/signup">Create free account</a>
-          <a className="btn-secondary" href="#features">See how it works</a>
-        </div>
-        <small>No credit card required. Free forever on one project.</small>
-        <div className="landing-points" aria-label="Product highlights">
-          <span>Cloud projects</span>
-          <span>Freeform canvas</span>
-          <span>Static export</span>
-        </div>
-      </section>
 
-      <section className="preview-wrap" aria-label="Editor preview">
-        <div className="browser-frame">
-          <div className="browser-bar">
-            <div className="browser-dots" aria-hidden="true">
-              <span className="red" />
-              <span className="yellow" />
-              <span className="green" />
-            </div>
-            <div className="url-bar">webception.app/canvas/my-project</div>
-          </div>
-          <div className="browser-content">
-            <div className="sidebar-mock">
-              {[0, 1, 2, 3].map((item) => (
-                <span className={`sidebar-item ${item === 0 ? 'active' : ''}`} key={item}>
-                  <i />
-                  <b />
-                </span>
-              ))}
-            </div>
-            <div className="canvas-mock">
-              <div className="canvas-hero-block">
-                <span />
-                <span />
+        <section className="preview-wrap" aria-label="Editor preview">
+          <div className="browser-frame">
+            <div className="browser-bar">
+              <div className="browser-dots" aria-hidden="true">
+                <span className="red" />
+                <span className="yellow" />
+                <span className="green" />
               </div>
-              <div className="canvas-row">
-                <span />
-                <span />
-                <span />
-              </div>
-              <div className="canvas-footer" />
+              <div className="url-bar">webception.app/studio</div>
+            </div>
+            <div className="browser-content">
+              <img src={landingUiImage} alt="Webception editor interface with canvas, blocks, and inspector controls" />
             </div>
           </div>
-        </div>
+        </section>
       </section>
 
       <div className="landing-divider" />
@@ -2114,8 +2096,11 @@ function ShapeRender({ element }: { element: BuilderElement }) {
 function LogoMark() {
   return (
     <svg className="logo-mark" viewBox="0 0 36 36" aria-hidden="true">
-      <path d="M7 25.5 13.5 8h5L12 25.5H7Z" />
-      <path d="M17.5 25.5 24 8h5l-6.5 17.5h-5Z" opacity=".78" />
+      <rect x="2.5" y="2.5" width="31" height="31" rx="9" />
+      <path className="logo-window" d="M9 11.2h18a2 2 0 0 1 2 2v11.6a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V13.2a2 2 0 0 1 2-2Z" />
+      <path className="logo-bar" d="M7.6 15.2h20.8" />
+      <path className="logo-dot" d="M11 13.25h.1M14 13.25h.1M17 13.25h.1" />
+      <path className="logo-w" d="M10.7 18.2 13 24l2.5-4.5L18 24l2.5-5.8M20.5 24l2.8-5.8" />
     </svg>
   )
 }
