@@ -2025,6 +2025,21 @@ select:focus-visible,
   background: var(--accent);
 }
 
+.auth-resend {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--field);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.auth-resend:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 9%, var(--field));
+}
+
 .auth-warning {
   padding: 10px 11px;
   border: 1px solid color-mix(in srgb, var(--danger) 24%, var(--line));
@@ -2686,6 +2701,16 @@ select:focus-visible,
 
 .auth-page-card .auth-submit:hover:not(:disabled) {
   background: #fff;
+}
+
+.auth-page-card .auth-resend {
+  color: #e8f0e9;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.auth-page-card .auth-resend:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
 }
 
 .auth-page-card .auth-warning {

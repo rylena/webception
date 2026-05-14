@@ -587,7 +587,26 @@ function App() {
       void loadCloudProjects(data.session.user)
       return
     }
-    setAuthMessage('Account created. Confirm your email, then come back and log in.')
+    setAuthMessage('Account created. Check your inbox and spam folder for the confirmation email.')
+  }
+
+  async function resendConfirmation(email: string) {
+    if (!supabase) return
+    setIsAuthBusy(true)
+    setAuthMessage('')
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: email.trim().toLowerCase(),
+      options: {
+        emailRedirectTo: `${window.location.origin}/?confirmed=1`,
+      },
+    })
+    setIsAuthBusy(false)
+    if (error) {
+      setAuthMessage(error.message)
+      return
+    }
+    setAuthMessage('Confirmation email sent again. Check your inbox and spam folder.')
   }
 
   async function signOut() {
@@ -877,6 +896,7 @@ function App() {
           message={authMessage}
           onSignIn={signIn}
           onSignUp={signUp}
+          onResendConfirmation={resendConfirmation}
         />
       )
     }
@@ -1089,6 +1109,7 @@ function App() {
           message={authMessage}
           onSignIn={signIn}
           onSignUp={signUp}
+          onResendConfirmation={resendConfirmation}
           onClose={() => setIsAuthOpen(false)}
         />
       )}
@@ -1233,6 +1254,7 @@ function AuthPage({
   message,
   onSignIn,
   onSignUp,
+  onResendConfirmation,
 }: {
   mode: 'login' | 'signup'
   configured: boolean
@@ -1240,6 +1262,7 @@ function AuthPage({
   message: string
   onSignIn: (email: string, password: string) => void
   onSignUp: (email: string, password: string) => void
+  onResendConfirmation: (email: string) => void
 }) {
   const isLogin = mode === 'login'
 
@@ -1276,6 +1299,7 @@ function AuthPage({
             message={message}
             onSignIn={onSignIn}
             onSignUp={onSignUp}
+            onResendConfirmation={onResendConfirmation}
             fixedMode={mode}
           />
           <p className="auth-page-switch">
@@ -1457,6 +1481,7 @@ function AuthDialog({
   message,
   onSignIn,
   onSignUp,
+  onResendConfirmation,
   onClose,
 }: {
   configured: boolean
@@ -1464,6 +1489,7 @@ function AuthDialog({
   message: string
   onSignIn: (email: string, password: string) => void
   onSignUp: (email: string, password: string) => void
+  onResendConfirmation: (email: string) => void
   onClose: () => void
 }) {
   return (
@@ -1482,6 +1508,7 @@ function AuthDialog({
           message={message}
           onSignIn={onSignIn}
           onSignUp={onSignUp}
+          onResendConfirmation={onResendConfirmation}
         />
       </section>
     </div>
@@ -1494,6 +1521,7 @@ function AuthForm({
   message,
   onSignIn,
   onSignUp,
+  onResendConfirmation,
   fixedMode,
 }: {
   configured: boolean
@@ -1501,6 +1529,7 @@ function AuthForm({
   message: string
   onSignIn: (email: string, password: string) => void
   onSignUp: (email: string, password: string) => void
+  onResendConfirmation: (email: string) => void
   fixedMode?: 'login' | 'signup'
 }) {
   const [email, setEmail] = useState('')
@@ -1511,6 +1540,7 @@ function AuthForm({
   const hasEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)
   const hasLongPassword = password.length >= passwordMinLength
   const canSubmit = configured && !busy && hasEmail && hasLongPassword
+  const canResendConfirmation = configured && !busy && hasEmail
 
   function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1555,6 +1585,15 @@ function AuthForm({
 
         <button type="submit" className="auth-submit cloud-primary" disabled={!canSubmit}>
           {busy ? 'Working...' : activeMode === 'login' ? 'Log in' : 'Create account'}
+        </button>
+
+        <button
+          type="button"
+          className="auth-resend"
+          disabled={!canResendConfirmation}
+          onClick={() => onResendConfirmation(trimmedEmail)}
+        >
+          Resend confirmation email
         </button>
 
         {message && <p className="auth-message">{message}</p>}
