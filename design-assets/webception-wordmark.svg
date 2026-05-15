@@ -1,0 +1,20 @@
+<svg width="960" height="240" viewBox="0 0 960 240" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="WebCeption logo">
+  <rect x="16" y="16" width="928" height="208" rx="34" fill="#F8FAF6"/>
+  <rect x="16" y="16" width="928" height="208" rx="34" stroke="#163D2B" stroke-width="8"/>
+  <g transform="translate(54 54)">
+    <rect width="132" height="132" rx="30" fill="#163D2B"/>
+    <rect x="27" y="40" width="78" height="58" rx="8" fill="#254F39" stroke="#F8FAF6" stroke-width="7"/>
+    <path d="M29 54H103" stroke="#F8FAF6" stroke-width="7" stroke-linecap="round"/>
+    <path d="M41 48H41.2M52 48H52.2M63 48H63.2" stroke="#F8FAF6" stroke-width="8" stroke-linecap="round"/>
+    <path d="M40 66L48 88L57 72L66 88L75 66M75 88L86 66" stroke="#F8FAF6" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="218" y="144" fill="#163D2B" font-family="Inter, Avenir Next, Segoe UI, Arial, sans-serif" font-size="88" font-weight="850" letter-spacing="-1">
+    Web
+  </text>
+  <text x="420" y="144" fill="#101813" font-family="Inter, Avenir Next, Segoe UI, Arial, sans-serif" font-size="88" font-weight="850" letter-spacing="-1">
+    Ception
+  </text>
+  <text x="224" y="184" fill="#607066" font-family="Inter, Avenir Next, Segoe UI, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="4">
+    ONLINE WEBSITE BUILDER
+  </text>
+</svg>

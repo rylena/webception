@@ -9,6 +9,7 @@ import landingUiImage from './assets/landing-ui.png'
 type DeviceMode = 'desktop' | 'tablet' | 'mobile'
 type ThemeMode = 'system' | 'light' | 'dark'
 type Align = 'left' | 'center' | 'right'
+type TextEffect = 'none' | 'underline' | 'typewriter'
 type ElementKind =
   | 'navbar'
   | 'hero'
@@ -37,7 +38,21 @@ type ElementKind =
   | 'badge'
   | 'icon'
 
-type AnimationType = 'none' | 'fade' | 'rise' | 'slide-left' | 'slide-right' | 'slide-up' | 'slide-down' | 'scale' | 'blur'
+type AnimationType =
+  | 'none'
+  | 'fade'
+  | 'rise'
+  | 'slide-left'
+  | 'slide-right'
+  | 'slide-up'
+  | 'slide-down'
+  | 'scale'
+  | 'blur'
+  | 'spin'
+  | 'vanish'
+  | 'pop'
+  | 'pulse'
+  | 'bounce'
 type Easing = 'ease' | 'ease-out' | 'ease-in-out' | 'spring'
 
 type Placement = {
@@ -62,6 +77,9 @@ type ElementStyle = {
   padding: number
   shadow: number
   rotation: number
+  italic: boolean
+  underline: boolean
+  textEffect: TextEffect
 }
 
 type ElementAnimation = {
@@ -70,6 +88,40 @@ type ElementAnimation = {
   delay: number
   easing: Easing
   repeat: boolean
+}
+
+type ImageAdjustments = {
+  brightness: number
+  contrast: number
+  saturation: number
+  grayscale: number
+  blur: number
+  hueRotate: number
+}
+
+type ImageCrop = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+type ElementLink = {
+  enabled: boolean
+  url: string
+  newTab: boolean
+}
+
+type MediaAsset = {
+  id: string
+  name: string
+  path: string
+  url: string
+  mime: string
+  size: number
+  width: number
+  height: number
+  createdAt: string
 }
 
 type ResizeHandle =
@@ -95,6 +147,10 @@ type BuilderElement = {
   overrides: Partial<Record<DeviceMode, Partial<Placement>>>
   style: ElementStyle
   animation: ElementAnimation
+  mediaAssetId?: string
+  imageAdjustments: ImageAdjustments
+  crop: ImageCrop
+  link: ElementLink
 }
 
 type BuilderProject = {
@@ -102,6 +158,7 @@ type BuilderProject = {
   themeMode: ThemeMode
   pageBackground: string
   elements: BuilderElement[]
+  mediaAssets: MediaAsset[]
 }
 
 type DragState = {
@@ -154,7 +211,29 @@ const canvasSizes: Record<DeviceMode, { width: number; height: number }> = {
   mobile: { width: 390, height: 1120 },
 }
 
-const fonts = ['Satoshi', 'General Sans', 'Hind', 'Nunito']
+const mediaBucket = 'project-media'
+const acceptedImageTypes = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'image/svg+xml',
+  'image/avif',
+  'image/bmp',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+])
+
+const fonts = [
+  { label: 'Canva Sans', value: 'Canva Sans' },
+  { label: 'Satoshi', value: 'Satoshi' },
+  { label: 'General Sans', value: 'General Sans' },
+  { label: 'Hind', value: 'Hind' },
+  { label: 'Nunito', value: 'Nunito' },
+  { label: 'Georgia', value: 'Georgia' },
+  { label: 'Courier', value: 'Courier' },
+  { label: 'Verdana', value: 'Verdana' },
+]
 
 const animations: Array<{ value: AnimationType; label: string }> = [
   { value: 'none', label: 'None' },
@@ -166,6 +245,11 @@ const animations: Array<{ value: AnimationType; label: string }> = [
   { value: 'slide-down', label: 'Slide down' },
   { value: 'scale', label: 'Scale' },
   { value: 'blur', label: 'Blur in' },
+  { value: 'spin', label: 'Spin' },
+  { value: 'vanish', label: 'Vanish' },
+  { value: 'pop', label: 'Pop' },
+  { value: 'pulse', label: 'Pulse' },
+  { value: 'bounce', label: 'Bounce' },
 ]
 
 const paletteGroups: Array<{
@@ -248,6 +332,7 @@ const starterProject: BuilderProject = {
   name: 'Home',
   themeMode: 'system',
   pageBackground: '#f7f8f3',
+  mediaAssets: [],
   elements: [
     makeElement('navbar', { x: 64, y: 36, width: 1072, height: 72, zIndex: 4 }),
     makeElement('hero', { x: 82, y: 146, width: 620, height: 310, zIndex: 2 }),
@@ -299,14 +384,15 @@ function App() {
   const [publicRoute, setPublicRoute] = useState<PublicRoute>(() => readPublicRoute())
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
   const dragRef = useRef<DragState | null>(null)
+  const canvasRef = useRef<HTMLDivElement | null>(null)
   const cloudSaveReadyRef = useRef(false)
+  const [mediaStatus, setMediaStatus] = useState('Drop images into Media or onto the canvas')
 
   const selected = project.elements.find((element) => element.id === selectedId) ?? project.elements[0]
   const quickMenuElement = quickMenu ? project.elements.find((element) => element.id === quickMenu.id) : undefined
   const user = session?.user ?? null
   const resolvedTheme = project.themeMode === 'system' ? (systemDark ? 'dark' : 'light') : project.themeMode
   const canvasSize = canvasSizes[device]
-  const exportBundle = useMemo(() => buildExport(project), [project])
   const visiblePaletteGroups = useMemo(
     () => filterPaletteGroups(activeLibrary, libraryQuery),
     [activeLibrary, libraryQuery],
@@ -926,20 +1012,117 @@ function App() {
     })
   }
 
+  async function uploadMediaFiles(files: FileList | File[], dropPlacement?: Partial<Placement>) {
+    const fileItems = Array.from(files).filter(isSupportedImageFile)
+    if (!fileItems.length) {
+      setMediaStatus('Drop PNG, JPG, WebP, GIF, SVG, AVIF, BMP, or ICO images')
+      return
+    }
+    if (!supabase || !user || !activeCloudProjectId) {
+      setMediaStatus('Sign in and open a cloud project before uploading media')
+      return
+    }
+
+    setMediaStatus(`Uploading ${fileItems.length} ${fileItems.length === 1 ? 'image' : 'images'}`)
+    const uploadedAssets: MediaAsset[] = []
+
+    for (const file of fileItems) {
+      const extension = getFileExtension(file.name, file.type)
+      const safeName = makeSafeFileName(file.name || `image.${extension}`)
+      const path = `${user.id}/${activeCloudProjectId}/${Date.now()}-${createId('media')}-${safeName}`
+      const { error } = await supabase.storage.from(mediaBucket).upload(path, file, {
+        cacheControl: '31536000',
+        contentType: file.type || undefined,
+        upsert: false,
+      })
+
+      if (error) {
+        setMediaStatus(`Upload failed: ${error.message}`)
+        return
+      }
+
+      const { data } = supabase.storage.from(mediaBucket).getPublicUrl(path)
+      const dimensions = await readImageDimensions(file)
+      uploadedAssets.push({
+        id: createId('media'),
+        name: file.name || safeName,
+        path,
+        url: data.publicUrl,
+        mime: file.type || `image/${extension}`,
+        size: file.size,
+        width: dimensions.width,
+        height: dimensions.height,
+        createdAt: new Date().toISOString(),
+      })
+    }
+
+    const maxZ = Math.max(0, ...project.elements.map((item) => item.placement.zIndex))
+    const placedElements = dropPlacement
+      ? uploadedAssets.map((asset, index) =>
+          makeMediaImageElement(asset, {
+            x: Math.round(dropPlacement.x ?? 120) + index * 24,
+            y: Math.round(dropPlacement.y ?? 160) + index * 24,
+            zIndex: maxZ + index + 1,
+          }),
+        )
+      : []
+
+    commitProject((current) => {
+      return {
+        ...current,
+        mediaAssets: [...current.mediaAssets, ...uploadedAssets],
+        elements: [...current.elements, ...placedElements],
+      }
+    })
+
+    if (placedElements.length) setSelectedId(placedElements.at(-1)?.id ?? placedElements[0].id)
+    setMediaStatus(`Uploaded ${uploadedAssets.length} ${uploadedAssets.length === 1 ? 'image' : 'images'}`)
+  }
+
+  function addMediaAssetToCanvas(asset: MediaAsset) {
+    const maxZ = Math.max(0, ...project.elements.map((item) => item.placement.zIndex))
+    const element = makeMediaImageElement(asset, {
+      x: 140 + (project.elements.length * 18) % 220,
+      y: 140 + (project.elements.length * 18) % 260,
+      zIndex: maxZ + 1,
+    })
+    commitProject((current) => ({ ...current, elements: [...current.elements, element] }))
+    setSelectedId(element.id)
+  }
+
+  function dropPlacementFromEvent(event: React.DragEvent): Partial<Placement> {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return { x: 120, y: 160 }
+    return {
+      x: Math.max(0, Math.round((event.clientX - rect.left) / (zoom / 100))),
+      y: Math.max(0, Math.round((event.clientY - rect.top) / (zoom / 100))),
+    }
+  }
+
   async function downloadSite() {
     setIsExporting(true)
-    const zip = new JSZip()
-    zip.file('index.html', exportBundle.html)
-    zip.file('styles.css', exportBundle.css)
-    zip.file('script.js', exportBundle.js)
-    const blob = await zip.generateAsync({ type: 'blob' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'webception-site.zip'
-    link.click()
-    URL.revokeObjectURL(url)
-    setIsExporting(false)
+    setMediaStatus('Preparing export')
+    try {
+      const zip = new JSZip()
+      const assetPaths = await addUploadedAssetsToZip(zip, project)
+      const exportBundle = buildExport(project, assetPaths)
+      zip.file('index.html', exportBundle.html)
+      zip.file('styles.css', exportBundle.css)
+      zip.file('script.js', exportBundle.js)
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'webception-site.zip'
+      link.click()
+      URL.revokeObjectURL(url)
+      setMediaStatus('Exported site with uploaded assets in /assets')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Export failed'
+      setMediaStatus(message)
+    } finally {
+      setIsExporting(false)
+    }
   }
 
   if (isSessionLoading) {
@@ -1010,8 +1193,10 @@ function App() {
           user={user}
           projects={cloudProjects}
           activeProjectId={activeCloudProjectId}
+          themeMode={project.themeMode}
           status={cloudStatus}
           busy={isCloudBusy}
+          onThemeMode={(themeMode) => commitProject((current) => ({ ...current, themeMode }))}
           onProjectOpen={openCloudProject}
           onNewProject={createCloudProject}
           onSampleProject={createSampleProject}
@@ -1097,9 +1282,13 @@ function App() {
           libraryQuery={libraryQuery}
           visiblePaletteGroups={visiblePaletteGroups}
           recentItems={recentItems}
+          mediaAssets={project.mediaAssets}
+          mediaStatus={mediaStatus}
           onActiveLibrary={setActiveLibrary}
           onLibraryQuery={setLibraryQuery}
           onAddElement={(item) => addElement(item.kind, item)}
+          onMediaFiles={uploadMediaFiles}
+          onAddMedia={addMediaAssetToCanvas}
           onApplyTemplate={applyTemplate}
         />
 
@@ -1110,7 +1299,16 @@ function App() {
             <span>{zoom}%</span>
           </div>
           <div
+            ref={canvasRef}
             className={`site-canvas ${isPreviewing ? 'previewing' : ''}`}
+            onDragOver={(event) => {
+              if (hasImageFiles(event.dataTransfer)) event.preventDefault()
+            }}
+            onDrop={(event) => {
+              if (!hasImageFiles(event.dataTransfer)) return
+              event.preventDefault()
+              void uploadMediaFiles(event.dataTransfer.files, dropPlacementFromEvent(event))
+            }}
             style={{
               width: canvasSize.width,
               height: canvasSize.height,
@@ -1119,6 +1317,21 @@ function App() {
             }}
           >
             <div className="alignment-guide" aria-hidden="true" />
+            {selected && (
+              <FloatingElementToolbar
+                selected={selected}
+                placement={resolvePlacement(selected, device)}
+                zoom={zoom}
+                onStyle={updateStyle}
+                onAnimation={updateAnimation}
+                onPlacement={updatePlacement}
+                onUpdate={updateElement}
+                onPreview={() => {
+                  setPreviewTick((value) => value + 1)
+                  setIsPreviewing(true)
+                }}
+              />
+            )}
             {project.elements
               .toSorted((a, b) => resolvePlacement(a, device).zIndex - resolvePlacement(b, device).zIndex)
               .map((element) => {
@@ -1196,6 +1409,10 @@ function App() {
           x={quickMenu.x}
           y={quickMenu.y}
           onStyle={(patch) => updateStyleForElement(quickMenuElement.id, patch)}
+          onUpdate={(patch) => commitProject((current) => ({
+            ...current,
+            elements: current.elements.map((element) => (element.id === quickMenuElement.id ? { ...element, ...patch } : element)),
+          }))}
           onClose={() => setQuickMenu(null)}
         />
       )}
@@ -1218,8 +1435,10 @@ function App() {
           user={user}
           projects={cloudProjects}
           activeProjectId={activeCloudProjectId}
+          themeMode={project.themeMode}
           status={cloudStatus}
           busy={isCloudBusy}
+          onThemeMode={(themeMode) => commitProject((current) => ({ ...current, themeMode }))}
           onProjectOpen={openCloudProject}
           onNewProject={createCloudProject}
           onSampleProject={createSampleProject}
@@ -1564,8 +1783,10 @@ function ProjectDashboard({
   user,
   projects,
   activeProjectId,
+  themeMode,
   status,
   busy,
+  onThemeMode,
   onProjectOpen,
   onNewProject,
   onSampleProject,
@@ -1576,8 +1797,10 @@ function ProjectDashboard({
   user: User
   projects: CloudProject[]
   activeProjectId: string
+  themeMode: ThemeMode
   status: string
   busy: boolean
+  onThemeMode: (themeMode: ThemeMode) => void
   onProjectOpen: (id: string) => void
   onNewProject: () => void
   onSampleProject: (key: TemplateKey) => void
@@ -1597,6 +1820,18 @@ function ProjectDashboard({
             <small>{projects.length} saved {projects.length === 1 ? 'project' : 'projects'} · {status}</small>
           </div>
           <div className="dashboard-header-actions">
+            <div className="dashboard-theme-toggle" aria-label="Dashboard theme">
+              {(['system', 'light', 'dark'] as const).map((mode) => (
+                <button
+                  type="button"
+                  key={mode}
+                  className={themeMode === mode ? 'active' : ''}
+                  onClick={() => onThemeMode(mode)}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
             <button type="button" onClick={onNewProject} disabled={busy}>New project</button>
             <button type="button" onClick={onSignOut}>Sign out</button>
             <button type="button" onClick={onClose} aria-label="Close dashboard">x</button>
@@ -1872,6 +2107,71 @@ function AuthForm({
   )
 }
 
+function FloatingElementToolbar({
+  selected,
+  placement,
+  zoom,
+  onStyle,
+  onAnimation,
+  onPlacement,
+  onUpdate,
+  onPreview,
+}: {
+  selected: BuilderElement
+  placement: Placement
+  zoom: number
+  onStyle: (patch: Partial<ElementStyle>) => void
+  onAnimation: (patch: Partial<ElementAnimation>) => void
+  onPlacement: (patch: Partial<Placement>) => void
+  onUpdate: (patch: Partial<BuilderElement>) => void
+  onPreview: () => void
+}) {
+  const top = Math.max(8, placement.y - 58)
+  const left = Math.max(8, placement.x + placement.width / 2)
+  return (
+    <div
+      className="floating-element-toolbar"
+      style={{
+        left,
+        top,
+        transform: `translateX(-50%) scale(${100 / zoom})`,
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      {isTextLike(selected.kind) && (
+        <>
+          <select aria-label="Toolbar font" value={selected.style.fontFamily} onChange={(event) => onStyle({ fontFamily: event.target.value })}>
+            {fonts.map((font) => <option key={font.value} value={font.value}>{font.label}</option>)}
+          </select>
+          <input aria-label="Toolbar font size" type="number" min="10" max="120" value={selected.style.fontSize} onChange={(event) => onStyle({ fontSize: Number(event.target.value) })} />
+          <input aria-label="Toolbar text color" type="color" value={selected.style.color} onChange={(event) => onStyle({ color: event.target.value })} />
+          <button type="button" className={selected.style.fontWeight >= 800 ? 'active' : ''} onClick={() => onStyle({ fontWeight: selected.style.fontWeight >= 800 ? 500 : 900 })}>B</button>
+          <button type="button" className={selected.style.italic ? 'active' : ''} onClick={() => onStyle({ italic: !selected.style.italic })}>I</button>
+          <button type="button" className={selected.style.underline ? 'active' : ''} onClick={() => onStyle({ underline: !selected.style.underline })}>U</button>
+          <button type="button" className={selected.style.textEffect === 'underline' ? 'active' : ''} onClick={() => onStyle({ textEffect: selected.style.textEffect === 'underline' ? 'none' : 'underline' })}>Effects</button>
+        </>
+      )}
+      {(selected.kind === 'image' || selected.kind === 'gallery') && (
+        <>
+          <button type="button" onClick={() => onUpdate({ crop: { x: 12, y: 12, width: 76, height: 76 } })}>Crop</button>
+          <button type="button" onClick={() => onUpdate({ imageAdjustments: { ...selected.imageAdjustments, contrast: selected.imageAdjustments.contrast === 100 ? 130 : 100 } })}>Contrast</button>
+        </>
+      )}
+      {!isTextLike(selected.kind) && selected.kind !== 'image' && selected.kind !== 'gallery' && (
+        <>
+          <input aria-label="Toolbar fill color" type="color" value={selected.style.background} onChange={(event) => onStyle({ background: event.target.value })} />
+          <input aria-label="Toolbar border color" type="color" value={selected.style.borderColor} onChange={(event) => onStyle({ borderColor: event.target.value })} />
+        </>
+      )}
+      <select aria-label="Toolbar animation" value={selected.animation.type} onChange={(event) => onAnimation({ type: event.target.value as AnimationType })}>
+        {animations.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+      </select>
+      <button type="button" onClick={onPreview}>Animate</button>
+      <button type="button" onClick={() => onPlacement({ zIndex: placement.zIndex + 1 })}>Position</button>
+    </div>
+  )
+}
+
 function Inspector({
   selected,
   placement,
@@ -1968,10 +2268,25 @@ function Inspector({
           <span>Font</span>
           <select value={selected.style.fontFamily} onChange={(event) => onStyle({ fontFamily: event.target.value })}>
             {fonts.map((font) => (
-              <option value={font} key={font}>{font}</option>
+              <option value={font.value} key={font.value}>{font.label}</option>
             ))}
           </select>
         </label>
+        <div className="segmented-control text-style-control" aria-label="Text style">
+          <button type="button" className={selected.style.fontWeight >= 800 ? 'active' : ''} onClick={() => onStyle({ fontWeight: selected.style.fontWeight >= 800 ? 500 : 900 })}>B</button>
+          <button type="button" className={selected.style.italic ? 'active' : ''} onClick={() => onStyle({ italic: !selected.style.italic })}>I</button>
+          <button type="button" className={selected.style.underline ? 'active' : ''} onClick={() => onStyle({ underline: !selected.style.underline })}>U</button>
+        </div>
+        {isTextLike(selected.kind) && (
+          <label>
+            <span>Text effect</span>
+            <select value={selected.style.textEffect} onChange={(event) => onStyle({ textEffect: event.target.value as TextEffect })}>
+              <option value="none">None</option>
+              <option value="underline">Underline sweep</option>
+              <option value="typewriter">Typing</option>
+            </select>
+          </label>
+        )}
         <Range label="Font size" min={10} max={82} value={selected.style.fontSize} onChange={(fontSize) => onStyle({ fontSize })} />
         <Range label="Padding" min={0} max={48} value={selected.style.padding} onChange={(padding) => onStyle({ padding })} />
         <Range label="Radius" min={0} max={80} value={selected.style.radius} onChange={(radius) => onStyle({ radius })} />
@@ -1996,6 +2311,61 @@ function Inspector({
             <input type="color" value={pageBackground} onChange={(event) => onProjectBackground(event.target.value)} />
           </label>
         </div>
+      </section>
+
+      {(selected.kind === 'image' || selected.kind === 'gallery') && (
+        <section className="control-section">
+          <h2>Image</h2>
+          <Range label="Brightness" min={40} max={180} value={selected.imageAdjustments.brightness} onChange={(brightness) => onUpdate({ imageAdjustments: { ...selected.imageAdjustments, brightness } })} />
+          <Range label="Contrast" min={40} max={180} value={selected.imageAdjustments.contrast} onChange={(contrast) => onUpdate({ imageAdjustments: { ...selected.imageAdjustments, contrast } })} />
+          <Range label="Saturation" min={0} max={220} value={selected.imageAdjustments.saturation} onChange={(saturation) => onUpdate({ imageAdjustments: { ...selected.imageAdjustments, saturation } })} />
+          <Range label="Grayscale" min={0} max={100} value={selected.imageAdjustments.grayscale} onChange={(grayscale) => onUpdate({ imageAdjustments: { ...selected.imageAdjustments, grayscale } })} />
+          <Range label="Blur" min={0} max={12} value={selected.imageAdjustments.blur} onChange={(blur) => onUpdate({ imageAdjustments: { ...selected.imageAdjustments, blur } })} />
+          <Range label="Hue" min={-180} max={180} value={selected.imageAdjustments.hueRotate} onChange={(hueRotate) => onUpdate({ imageAdjustments: { ...selected.imageAdjustments, hueRotate } })} />
+          <div className="number-grid">
+            <label>
+              <span>Crop X</span>
+              <input type="number" min="0" max="100" value={selected.crop.x} onChange={(event) => onUpdate({ crop: { ...selected.crop, x: clamp(Number(event.target.value), 0, 100) } })} />
+            </label>
+            <label>
+              <span>Crop Y</span>
+              <input type="number" min="0" max="100" value={selected.crop.y} onChange={(event) => onUpdate({ crop: { ...selected.crop, y: clamp(Number(event.target.value), 0, 100) } })} />
+            </label>
+            <label>
+              <span>Crop W</span>
+              <input type="number" min="10" max="100" value={selected.crop.width} onChange={(event) => onUpdate({ crop: { ...selected.crop, width: clamp(Number(event.target.value), 10, 100) } })} />
+            </label>
+            <label>
+              <span>Crop H</span>
+              <input type="number" min="10" max="100" value={selected.crop.height} onChange={(event) => onUpdate({ crop: { ...selected.crop, height: clamp(Number(event.target.value), 10, 100) } })} />
+            </label>
+          </div>
+          <button type="button" className="wide-action" onClick={() => onUpdate({ crop: { x: 12, y: 12, width: 76, height: 76 } })}>Crop center</button>
+        </section>
+      )}
+
+      <section className="control-section">
+        <h2>Click action</h2>
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={selected.link.enabled}
+            onChange={(event) => onUpdate({ link: { ...selected.link, enabled: event.target.checked } })}
+          />
+          <span>Make this element clickable</span>
+        </label>
+        <label>
+          <span>URL</span>
+          <input value={selected.link.url} onChange={(event) => onUpdate({ link: { ...selected.link, url: event.target.value } })} placeholder="https://example.com" />
+        </label>
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={selected.link.newTab}
+            onChange={(event) => onUpdate({ link: { ...selected.link, newTab: event.target.checked } })}
+          />
+          <span>Open in new tab</span>
+        </label>
       </section>
 
       <section className="control-section">
@@ -2056,12 +2426,14 @@ function QuickStyleMenu({
   x,
   y,
   onStyle,
+  onUpdate,
   onClose,
 }: {
   element: BuilderElement
   x: number
   y: number
   onStyle: (patch: Partial<ElementStyle>) => void
+  onUpdate: (patch: Partial<BuilderElement>) => void
   onClose: () => void
 }) {
   return (
@@ -2081,7 +2453,7 @@ function QuickStyleMenu({
           <span>Font</span>
           <select value={element.style.fontFamily} onChange={(event) => onStyle({ fontFamily: event.target.value })}>
             {fonts.map((font) => (
-              <option value={font} key={font}>{font}</option>
+              <option value={font.value} key={font.value}>{font.label}</option>
             ))}
           </select>
         </label>
@@ -2130,6 +2502,13 @@ function QuickStyleMenu({
           <input type="color" value={element.style.borderColor} onChange={(event) => onStyle({ borderColor: event.target.value })} />
         </label>
       </div>
+
+      {(element.kind === 'image' || element.kind === 'gallery') && (
+        <div className="quick-image-actions">
+          <button type="button" onClick={() => onUpdate({ crop: { x: 12, y: 12, width: 76, height: 76 } })}>Crop</button>
+          <button type="button" onClick={() => onUpdate({ crop: { x: 0, y: 0, width: 100, height: 100 } })}>Reset crop</button>
+        </div>
+      )}
     </aside>
   )
 }
@@ -2139,20 +2518,30 @@ function LibrarySidebar({
   libraryQuery,
   visiblePaletteGroups,
   recentItems,
+  mediaAssets,
+  mediaStatus,
   onActiveLibrary,
   onLibraryQuery,
   onAddElement,
+  onMediaFiles,
+  onAddMedia,
   onApplyTemplate,
 }: {
   activeLibrary: LibraryKey
   libraryQuery: string
   visiblePaletteGroups: typeof paletteGroups
   recentItems: PaletteItem[]
+  mediaAssets: MediaAsset[]
+  mediaStatus: string
   onActiveLibrary: (key: LibraryKey) => void
   onLibraryQuery: (value: string) => void
   onAddElement: (item: PaletteItem) => void
+  onMediaFiles: (files: FileList | File[]) => void
+  onAddMedia: (asset: MediaAsset) => void
   onApplyTemplate: (key: (typeof templates)[number]['key']) => void
 }) {
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
+
   return (
     <aside className="left-panel" aria-label="Design library">
       <nav className="library-rail" aria-label="Library sections">
@@ -2201,6 +2590,16 @@ function LibrarySidebar({
                 </button>
               ))}
             </section>
+          ) : activeLibrary === 'media' ? (
+            <MediaLibrary
+              assets={mediaAssets}
+              status={mediaStatus}
+              inputRef={uploadInputRef}
+              groups={visiblePaletteGroups}
+              onMediaFiles={onMediaFiles}
+              onAddMedia={onAddMedia}
+              onAddElement={onAddElement}
+            />
           ) : (
             <>
               {!libraryQuery && recentItems.length > 0 && (
@@ -2252,6 +2651,96 @@ function LibrarySidebar({
   )
 }
 
+function MediaLibrary({
+  assets,
+  status,
+  inputRef,
+  groups,
+  onMediaFiles,
+  onAddMedia,
+  onAddElement,
+}: {
+  assets: MediaAsset[]
+  status: string
+  inputRef: React.RefObject<HTMLInputElement | null>
+  groups: typeof paletteGroups
+  onMediaFiles: (files: FileList | File[]) => void
+  onAddMedia: (asset: MediaAsset) => void
+  onAddElement: (item: PaletteItem) => void
+}) {
+  return (
+    <>
+      <section
+        className="media-dropzone"
+        onDragOver={(event) => {
+          if (hasImageFiles(event.dataTransfer)) event.preventDefault()
+        }}
+        onDrop={(event) => {
+          if (!hasImageFiles(event.dataTransfer)) return
+          event.preventDefault()
+          onMediaFiles(event.dataTransfer.files)
+        }}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*,.svg,.avif,.bmp,.ico"
+          multiple
+          onChange={(event) => {
+            if (event.target.files) onMediaFiles(event.target.files)
+            event.currentTarget.value = ''
+          }}
+        />
+        <button type="button" onClick={() => inputRef.current?.click()}>
+          Upload images
+        </button>
+        <span>{status}</span>
+      </section>
+
+      <section className="media-asset-browser" aria-label="Uploaded media">
+        <div className="library-section-title">
+          <h2>Uploaded media</h2>
+          <small>{assets.length}</small>
+        </div>
+        {assets.length ? (
+          <div className="media-asset-grid">
+            {assets.map((asset) => (
+              <button type="button" key={asset.id} className="media-asset-tile" onClick={() => onAddMedia(asset)}>
+                <img src={asset.url} alt="" />
+                <span>{asset.name}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-library">Upload an image or drop one onto the canvas.</p>
+        )}
+      </section>
+
+      <section className="category-browser" aria-label="Media blocks">
+        <div className="library-section-title">
+          <h2>Media blocks</h2>
+        </div>
+        {groups.map((group) => (
+          <section className="palette-group" key={group.label}>
+            <h2>{group.label}</h2>
+            <div className="block-list">
+              {group.items.map((item) => (
+                <button type="button" key={`${group.label}-${item.label}-${item.kind}`} className="block-tile" onClick={() => onAddElement(item)}>
+                  <span className={`block-icon ${item.kind}`} aria-hidden="true" />
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.detail}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
+      </section>
+    </>
+  )
+}
+
 function CanvasElement({
   element,
   placement,
@@ -2285,10 +2774,15 @@ function CanvasElement({
     '--element-opacity': `${element.style.opacity / 100}`,
     '--element-size': `${element.style.fontSize}px`,
     '--element-weight': element.style.fontWeight,
-    '--element-font': `'${element.style.fontFamily}', Satoshi, sans-serif`,
+    '--element-font': fontCss(element.style.fontFamily),
+    '--element-align': element.style.align,
     '--element-padding': `${element.style.padding}px`,
     '--element-shadow': `0 ${element.style.shadow}px ${element.style.shadow * 2.4}px rgba(21, 27, 22, ${element.style.shadow ? 0.14 : 0})`,
     '--element-rotation': `${element.style.rotation}deg`,
+    '--image-filter': imageFilter(element.imageAdjustments),
+    '--image-position-x': `${50 + element.crop.x - (100 - element.crop.width) / 2}%`,
+    '--image-position-y': `${50 + element.crop.y - (100 - element.crop.height) / 2}%`,
+    '--image-zoom': Math.max(1, 100 / Math.max(1, Math.min(element.crop.width, element.crop.height))),
     '--animation-duration': `${element.animation.duration}ms`,
     '--animation-delay': `${element.animation.delay}ms`,
     '--animation-easing': element.animation.easing === 'spring' ? 'cubic-bezier(.16,1,.3,1)' : element.animation.easing,
@@ -2297,7 +2791,7 @@ function CanvasElement({
 
   return (
     <article
-      className={`canvas-element ${element.kind} ${selected ? 'selected' : ''} ${previewing ? `animate-${element.animation.type}` : ''}`}
+      className={`canvas-element ${element.kind} text-effect-${element.style.textEffect} ${element.style.italic ? 'is-italic' : ''} ${element.style.underline ? 'is-underlined' : ''} ${selected ? 'selected' : ''} ${previewing ? `animate-${element.animation.type}` : ''}`}
       style={style}
       onClick={onSelect}
       onPointerDown={onPointerDown}
@@ -2577,6 +3071,130 @@ function filterPaletteGroups(activeLibrary: LibraryKey, query: string): typeof p
     .filter((group) => group.items.length > 0)
 }
 
+function hasImageFiles(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.items ?? []).some((item) => item.kind === 'file' && item.type.startsWith('image/'))
+}
+
+function isSupportedImageFile(file: File) {
+  return file.type.startsWith('image/') || acceptedImageTypes.has(file.type)
+}
+
+function readImageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file)
+    const image = new Image()
+    image.onload = () => {
+      URL.revokeObjectURL(url)
+      resolve({ width: image.naturalWidth || 0, height: image.naturalHeight || 0 })
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(url)
+      resolve({ width: 0, height: 0 })
+    }
+    image.src = url
+  })
+}
+
+function getFileExtension(name: string, mime: string) {
+  const extension = name.split('.').pop()?.toLowerCase()
+  if (extension && extension.length <= 6) return extension
+  if (mime === 'image/jpeg') return 'jpg'
+  if (mime === 'image/svg+xml') return 'svg'
+  if (mime === 'image/vnd.microsoft.icon' || mime === 'image/x-icon') return 'ico'
+  return mime.replace('image/', '') || 'png'
+}
+
+function makeSafeFileName(name: string) {
+  const safe = name.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+  return safe || 'image.png'
+}
+
+function makeMediaImageElement(asset: MediaAsset, placementPatch: Partial<Placement> = {}): BuilderElement {
+  const element = makeElement('image', {
+    width: asset.width && asset.height ? Math.min(420, Math.max(180, asset.width / 2)) : 360,
+    height: asset.width && asset.height ? Math.min(360, Math.max(160, asset.height / 2)) : 260,
+    ...placementPatch,
+  })
+  return {
+    ...element,
+    name: asset.name,
+    title: asset.name,
+    src: asset.url,
+    mediaAssetId: asset.id,
+  }
+}
+
+async function addUploadedAssetsToZip(zip: JSZip, project: BuilderProject) {
+  const assetPathMap = new Map<string, string>()
+  const usedAssetIds = new Set(project.elements.map((element) => element.mediaAssetId).filter(Boolean) as string[])
+  const usedAssets = project.mediaAssets.filter((asset) => usedAssetIds.has(asset.id))
+  const usedNames = new Set<string>()
+
+  for (const asset of usedAssets) {
+    const fileName = uniqueFileName(makeSafeFileName(asset.name), usedNames)
+    const zipPath = `assets/${fileName}`
+    const response = await fetch(asset.url)
+    if (!response.ok) {
+      throw new Error(`Could not export ${asset.name}. Check the uploaded file and try again.`)
+    }
+    zip.file(zipPath, await response.blob())
+    assetPathMap.set(asset.id, `./${zipPath}`)
+  }
+
+  return assetPathMap
+}
+
+function uniqueFileName(name: string, usedNames: Set<string>) {
+  if (!usedNames.has(name)) {
+    usedNames.add(name)
+    return name
+  }
+
+  const dot = name.lastIndexOf('.')
+  const base = dot > 0 ? name.slice(0, dot) : name
+  const extension = dot > 0 ? name.slice(dot) : ''
+  let index = 2
+  let candidate = `${base}-${index}${extension}`
+  while (usedNames.has(candidate)) {
+    index += 1
+    candidate = `${base}-${index}${extension}`
+  }
+  usedNames.add(candidate)
+  return candidate
+}
+
+function clamp(value: number, min: number, max: number) {
+  if (Number.isNaN(value)) return min
+  return Math.min(max, Math.max(min, value))
+}
+
+function isTextLike(kind: ElementKind) {
+  return ['hero', 'text', 'richText', 'button', 'navbar', 'card', 'testimonial', 'footer', 'pill', 'badge'].includes(kind)
+}
+
+function normalizeFontValue(value: string) {
+  return fonts.some((font) => font.value === value) ? value : 'Satoshi'
+}
+
+function fontCss(value: string) {
+  const normalized = normalizeFontValue(value)
+  const stacks: Record<string, string> = {
+    'Canva Sans': 'Arial, Helvetica, sans-serif',
+    Satoshi: 'Inter, "Segoe UI", Arial, sans-serif',
+    'General Sans': '"Trebuchet MS", Arial, sans-serif',
+    Hind: 'Hind, "Arial Narrow", Arial, sans-serif',
+    Nunito: 'Nunito, "Segoe UI Rounded", Arial, sans-serif',
+    Georgia: 'Georgia, "Times New Roman", serif',
+    Courier: '"Courier New", Courier, monospace',
+    Verdana: 'Verdana, Geneva, sans-serif',
+  }
+  return stacks[normalized] ?? stacks.Satoshi
+}
+
+function imageFilter(adjustments: ImageAdjustments) {
+  return `brightness(${adjustments.brightness}%) contrast(${adjustments.contrast}%) saturate(${adjustments.saturation}%) grayscale(${adjustments.grayscale}%) blur(${adjustments.blur}px) hue-rotate(${adjustments.hueRotate}deg)`
+}
+
 function resizePlacement(start: Placement, handle: ResizeHandle, dx: number, dy: number): Placement {
   const minWidth = 32
   const minHeight = 24
@@ -2614,7 +3232,7 @@ function resizePlacement(start: Placement, handle: ResizeHandle, dx: number, dy:
   }
 }
 
-function createId(kind: ElementKind) {
+function createId(kind: string) {
   return `${kind}-${crypto.randomUUID().slice(0, 8)}`
 }
 
@@ -2638,6 +3256,9 @@ function makeElement(kind: ElementKind, placementPatch: Partial<Placement> = {})
     },
     style: baseStyle,
     animation: { type: 'rise', duration: 620, delay: 0, easing: 'ease-out', repeat: false },
+    imageAdjustments: defaultImageAdjustments(),
+    crop: { x: 0, y: 0, width: 100, height: 100 },
+    link: { enabled: false, url: '', newTab: true },
   }
 }
 
@@ -2647,6 +3268,7 @@ function makeTemplateProject(key: (typeof templates)[number]['key']): BuilderPro
       name: 'Portfolio',
       themeMode: 'system',
       pageBackground: '#f2f4ef',
+      mediaAssets: [],
       elements: [
         makeElement('navbar', { x: 64, y: 34, width: 1072, height: 70, zIndex: 4 }),
         customize(makeElement('hero', { x: 82, y: 136, width: 610, height: 300, zIndex: 2 }), {
@@ -2669,6 +3291,7 @@ function makeTemplateProject(key: (typeof templates)[number]['key']): BuilderPro
       name: 'Event',
       themeMode: 'system',
       pageBackground: '#f8f1eb',
+      mediaAssets: [],
       elements: [
         customize(makeElement('badge', { x: 82, y: 120, width: 190, height: 40, zIndex: 3 }), { text: 'Friday 6:30 PM' }),
         customize(makeElement('hero', { x: 82, y: 170, width: 620, height: 290, zIndex: 2 }), {
@@ -2741,6 +3364,20 @@ function defaultStyle(kind: ElementKind): ElementStyle {
     padding: kind === 'button' || isShape ? 12 : 22,
     shadow: kind === 'blob' || kind === 'line' ? 0 : 14,
     rotation: 0,
+    italic: false,
+    underline: false,
+    textEffect: 'none',
+  }
+}
+
+function defaultImageAdjustments(): ImageAdjustments {
+  return {
+    brightness: 100,
+    contrast: 100,
+    saturation: 100,
+    grayscale: 0,
+    blur: 0,
+    hueRotate: 0,
   }
 }
 
@@ -2801,7 +3438,30 @@ function normalizeCloudProject(project: BuilderProject, fallbackName: string): B
     name: project?.name || fallbackName || 'Untitled',
     themeMode: project?.themeMode ?? 'system',
     pageBackground: project?.pageBackground || '#f7f8f3',
-    elements: Array.isArray(project?.elements) ? project.elements : [],
+    mediaAssets: Array.isArray(project?.mediaAssets) ? project.mediaAssets : [],
+    elements: Array.isArray(project?.elements) ? project.elements.map(normalizeElement) : [],
+  }
+}
+
+function normalizeElement(element: BuilderElement): BuilderElement {
+  const fallback = makeElement(element.kind ?? 'text')
+  return {
+    ...fallback,
+    ...element,
+    placement: { ...fallback.placement, ...element.placement },
+    overrides: { ...fallback.overrides, ...element.overrides },
+    style: {
+      ...fallback.style,
+      ...element.style,
+      fontFamily: normalizeFontValue(element.style?.fontFamily ?? fallback.style.fontFamily),
+      italic: Boolean(element.style?.italic),
+      underline: Boolean(element.style?.underline),
+      textEffect: element.style?.textEffect ?? 'none',
+    },
+    animation: { ...fallback.animation, ...element.animation },
+    imageAdjustments: { ...defaultImageAdjustments(), ...element.imageAdjustments },
+    crop: { ...fallback.crop, ...element.crop },
+    link: { ...fallback.link, ...element.link },
   }
 }
 
@@ -2820,7 +3480,7 @@ function cloneElement(element: BuilderElement): BuilderElement {
   return JSON.parse(JSON.stringify(element)) as BuilderElement
 }
 
-function buildExport(project: BuilderProject) {
+function buildExport(project: BuilderProject, assetPaths = new Map<string, string>()) {
   const elements = project.elements.toSorted((a, b) => a.placement.zIndex - b.placement.zIndex)
   const html = `<!doctype html>
 <html lang="en">
@@ -2832,7 +3492,7 @@ function buildExport(project: BuilderProject) {
 </head>
 <body>
   <main class="page" aria-label="${escapeHtml(project.name)}">
-${elements.map((element) => exportElementHtml(element)).join('\n')}
+${elements.map((element) => exportElementHtml(element, assetPaths)).join('\n')}
   </main>
   <script src="./script.js"></script>
 </body>
@@ -2844,7 +3504,10 @@ body { margin: 0; background: var(--page-bg); color: #182018; font-family: syste
 .page { position: relative; width: min(1200px, 100%); min-height: 820px; margin: 0 auto; overflow: hidden; }
 .wc-el { position: absolute; display: grid; overflow: hidden; }
 .wc-el h1, .wc-el h2, .wc-el p { margin: 0; }
-.wc-el img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.wc-el img { width: 100%; height: 100%; object-fit: cover; object-position: var(--image-position, 50% 50%); filter: var(--image-filter, none); transform: scale(var(--image-zoom, 1)); display: block; }
+.wc-el a.wc-link { display: contents; color: inherit; text-decoration: none; }
+.wc-el.text-effect-underline :is(h1,h2,p,strong,span,button) { background-image: linear-gradient(currentColor,currentColor); background-repeat: no-repeat; background-position: 0 100%; background-size: 100% 2px; text-decoration: none; }
+.wc-el.text-effect-typewriter :is(h1,h2,p,strong,span) { width: fit-content; max-width: 100%; overflow: hidden; border-right: 2px solid currentColor; white-space: nowrap; animation: wc-typewriter 2.4s steps(26,end) both, wc-caret 780ms step-end infinite; }
 .wc-button { width: 100%; height: 100%; border: 0; border-radius: inherit; color: inherit; background: transparent; font: inherit; font-weight: 800; }
 .wc-navbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; width: 100%; height: 100%; }
 .wc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: 100%; }
@@ -2868,7 +3531,14 @@ ${elements.map((element) => exportElementCss(element, 'mobile')).join('\n')}
 @keyframes wc-slide-up { from { opacity: 0; transform: translateY(40px) rotate(var(--rotate)); } to { opacity: var(--target-opacity, 1); transform: translateY(0) rotate(var(--rotate)); } }
 @keyframes wc-slide-down { from { opacity: 0; transform: translateY(-40px) rotate(var(--rotate)); } to { opacity: var(--target-opacity, 1); transform: translateY(0) rotate(var(--rotate)); } }
 @keyframes wc-scale { from { opacity: 0; transform: scale(.92) rotate(var(--rotate)); } to { opacity: var(--target-opacity, 1); transform: scale(1) rotate(var(--rotate)); } }
-@keyframes wc-blur { from { opacity: 0; filter: blur(10px); } to { opacity: var(--target-opacity, 1); filter: blur(0); } }`
+@keyframes wc-blur { from { opacity: 0; filter: blur(10px); } to { opacity: var(--target-opacity, 1); filter: blur(0); } }
+@keyframes wc-spin { from { transform: rotate(var(--rotate)); } to { transform: rotate(calc(var(--rotate) + 360deg)); } }
+@keyframes wc-vanish { from { opacity: var(--target-opacity, 1); transform: scale(1) rotate(var(--rotate)); } to { opacity: 0; transform: scale(.86) rotate(var(--rotate)); } }
+@keyframes wc-pop { 0% { opacity: 0; transform: scale(.76) rotate(var(--rotate)); } 70% { opacity: var(--target-opacity, 1); transform: scale(1.06) rotate(var(--rotate)); } 100% { opacity: var(--target-opacity, 1); transform: scale(1) rotate(var(--rotate)); } }
+@keyframes wc-pulse { 0%, 100% { transform: scale(1) rotate(var(--rotate)); } 50% { transform: scale(1.04) rotate(var(--rotate)); } }
+@keyframes wc-bounce { 0%, 100% { transform: translateY(0) rotate(var(--rotate)); } 45% { transform: translateY(-18px) rotate(var(--rotate)); } 70% { transform: translateY(4px) rotate(var(--rotate)); } }
+@keyframes wc-typewriter { from { max-width: 0; } to { max-width: 100%; } }
+@keyframes wc-caret { 50% { border-color: transparent; } }`
 
   const js = `document.querySelectorAll('[data-animate]').forEach((el) => {
   const type = el.dataset.animate;
@@ -2879,10 +3549,14 @@ ${elements.map((element) => exportElementCss(element, 'mobile')).join('\n')}
   return { html, css, js }
 }
 
-function exportElementHtml(element: BuilderElement) {
+function exportElementHtml(element: BuilderElement, assetPaths: Map<string, string>) {
   const id = `el-${element.id}`
-  return `    <section id="${id}" class="wc-el ${exportClass(element.kind)}" data-animate="${element.animation.type}">
-      ${exportContent(element)}
+  const content = exportContent(element, assetPaths)
+  const linkedContent = element.link.enabled && safeHref(element.link.url)
+    ? `<a class="wc-link" href="${escapeHtml(safeHref(element.link.url))}"${element.link.newTab ? ' target="_blank" rel="noopener noreferrer"' : ''}>${content}</a>`
+    : content
+  return `    <section id="${id}" class="wc-el ${exportClass(element.kind)} text-effect-${element.style.textEffect}" data-animate="${element.animation.type}">
+      ${linkedContent}
     </section>`
 }
 
@@ -2890,12 +3564,12 @@ function exportClass(kind: ElementKind) {
   return `wc-${kind.replace(/[A-Z]/g, (value) => `-${value.toLowerCase()}`)}`
 }
 
-function exportContent(element: BuilderElement) {
+function exportContent(element: BuilderElement, assetPaths: Map<string, string>) {
   if (element.kind === 'navbar') return `<div class="wc-navbar"><strong>${escapeHtml(element.title)}</strong><span>Work Pricing Contact</span><button>${escapeHtml(element.action)}</button></div>`
   if (element.kind === 'hero') return `<h1>${escapeHtml(element.title)}</h1><p>${escapeHtml(element.text)}</p><small>${escapeHtml(element.subtext)}</small><button>${escapeHtml(element.action)}</button>`
   if (element.kind === 'button') return `<button class="wc-button">${escapeHtml(element.text || element.action)}</button>`
   if (element.kind === 'image') {
-    const src = safeMediaUrl(element.src)
+    const src = element.mediaAssetId ? assetPaths.get(element.mediaAssetId) ?? '' : safeMediaUrl(element.src)
     return src ? `<img src="${escapeHtml(src)}" alt="" />` : '<div class="wc-image-placeholder"></div>'
   }
   if (element.kind === 'gallery') return '<div class="wc-gallery"><span></span><span></span><span></span></div>'
@@ -2919,12 +3593,14 @@ function exportElementCss(element: BuilderElement, device: DeviceMode = 'desktop
   const placement = resolvePlacement(element, device)
   const animationName = element.animation.type === 'none' ? 'none' : `wc-${element.animation.type}`
   const radius = element.kind === 'circle' ? '999px' : `${element.style.radius}px`
+  const imagePosition = `${50 + element.crop.x - (100 - element.crop.width) / 2}% ${50 + element.crop.y - (100 - element.crop.height) / 2}%`
   return `#el-${element.id} {
   left: ${placement.x}px; top: ${placement.y}px; width: ${placement.width}px; height: ${placement.height}px; z-index: ${placement.zIndex};
   padding: ${element.style.padding}px; color: ${element.style.color}; background: ${element.style.background}; border: ${element.style.borderWidth}px solid ${element.style.borderColor};
   border-radius: ${radius}; opacity: ${element.style.opacity / 100}; --target-opacity: ${element.style.opacity / 100}; --rotate: ${element.style.rotation}deg;
-  font-family: '${element.style.fontFamily}', Satoshi, sans-serif; font-size: ${element.style.fontSize}px; font-weight: ${element.style.fontWeight}; text-align: ${element.style.align};
+  font-family: ${fontCss(element.style.fontFamily)}; font-size: ${element.style.fontSize}px; font-weight: ${element.style.fontWeight}; font-style: ${element.style.italic ? 'italic' : 'normal'}; text-decoration: ${element.style.underline ? 'underline' : 'none'}; text-align: ${element.style.align};
   box-shadow: 0 ${element.style.shadow}px ${element.style.shadow * 2.4}px rgba(21, 27, 22, ${element.style.shadow ? 0.14 : 0});
+  --image-filter: ${imageFilter(element.imageAdjustments)}; --image-position: ${imagePosition}; --image-zoom: ${Math.max(1, 100 / Math.max(1, Math.min(element.crop.width, element.crop.height)))};
   transform: rotate(${element.style.rotation}deg); animation: ${animationName} ${element.animation.duration}ms ${element.animation.easing === 'spring' ? 'cubic-bezier(.16,1,.3,1)' : element.animation.easing} ${element.animation.delay}ms ${element.animation.repeat ? 'infinite' : '1'} both;
 }`
 }
@@ -2938,6 +3614,18 @@ function safeMediaUrl(value: string) {
   try {
     const url = new URL(value)
     return url.protocol === 'https:' ? url.toString() : ''
+  } catch {
+    return ''
+  }
+}
+
+function safeHref(value: string) {
+  const cleanValue = value.trim()
+  if (!cleanValue) return ''
+  if (cleanValue.startsWith('#') || cleanValue.startsWith('/')) return cleanValue
+  try {
+    const url = new URL(cleanValue)
+    return ['https:', 'http:', 'mailto:', 'tel:'].includes(url.protocol) ? url.toString() : ''
   } catch {
     return ''
   }
