@@ -147,6 +147,8 @@ type BuilderElement = {
   overrides: Partial<Record<DeviceMode, Partial<Placement>>>
   style: ElementStyle
   animation: ElementAnimation
+  locked: boolean
+  groupId: string
   mediaAssetId?: string
   imageAdjustments: ImageAdjustments
   crop: ImageCrop
@@ -163,11 +165,13 @@ type BuilderProject = {
 
 type DragState = {
   id: string
+  ids: string[]
   mode: 'move' | 'resize'
   handle?: ResizeHandle
   pointerX: number
   pointerY: number
   start: Placement
+  starts: Record<string, Placement>
 }
 
 type QuickMenuState = {
@@ -180,11 +184,10 @@ type CloudProject = {
   id: string
   name: string
   updated_at: string
-}
-
-type CloudProjectRow = CloudProject & {
   data: BuilderProject
 }
+
+type CloudProjectRow = CloudProject
 
 type AuthRedirectNotice = {
   kind: 'confirmed' | 'error'
@@ -352,13 +355,16 @@ const templates = [
 type TemplateKey = (typeof templates)[number]['key']
 
 const passwordMinLength = 8
-type PublicRoute = '/' | '/login' | '/signup'
+type PublicRoute = '/' | '/login' | '/signup' | '/editor'
 
 function App() {
   const [project, setProject] = useState<BuilderProject>(() => cloneProject(starterProject))
   const [history, setHistory] = useState<BuilderProject[]>([])
   const [future, setFuture] = useState<BuilderProject[]>([])
   const [selectedId, setSelectedId] = useState(project.elements[0]?.id ?? '')
+  const [selectedIds, setSelectedIds] = useState<string[]>(project.elements[0]?.id ? [project.elements[0].id] : [])
+  const [editingId, setEditingId] = useState('')
+  const [isCropMode, setIsCropMode] = useState(false)
   const [device, setDevice] = useState<DeviceMode>('desktop')
   const [zoom, setZoom] = useState(64)
   const [lastSaved, setLastSaved] = useState('Online only')
@@ -389,6 +395,7 @@ function App() {
   const [mediaStatus, setMediaStatus] = useState('Drop images into Media or onto the canvas')
 
   const selected = project.elements.find((element) => element.id === selectedId) ?? project.elements[0]
+  const selectedElements = project.elements.filter((element) => selectedIds.includes(element.id))
   const quickMenuElement = quickMenu ? project.elements.find((element) => element.id === quickMenu.id) : undefined
   const user = session?.user ?? null
   const resolvedTheme = project.themeMode === 'system' ? (systemDark ? 'dark' : 'light') : project.themeMode
@@ -498,11 +505,13 @@ function App() {
       rows = [created as CloudProjectRow]
     }
 
-    const summaries = rows.map(({ id, name, updated_at }) => ({ id, name, updated_at }))
+    const summaries = rows.map(({ id, name, updated_at, data }) => ({ id, name, updated_at, data: normalizeCloudProject(data, name) }))
     setCloudProjects(summaries)
-    setActiveCloudProjectId(rows[0].id)
-    setProject(normalizeCloudProject(rows[0].data, rows[0].name))
-    setSelectedId(rows[0].data.elements?.[0]?.id ?? '')
+    const routeProjectId = readEditorProjectId()
+    const activeRow = rows.find((row) => row.id === routeProjectId) ?? rows[0]
+    setActiveCloudProjectId(activeRow.id)
+    setProject(normalizeCloudProject(activeRow.data, activeRow.name))
+    selectInitialElement(activeRow.data.elements?.[0]?.id ?? '')
     setCloudStatus('Cloud synced')
     window.setTimeout(() => {
       cloudSaveReadyRef.current = true
@@ -524,7 +533,7 @@ function App() {
         setIsPasswordResetOpen(true)
         cleanupAuthRedirectUrl()
       } else if (data.session?.user) {
-        setIsDashboardOpen(!redirectNotice)
+        setIsDashboardOpen(!redirectNotice && publicRoute !== '/editor')
         void loadCloudProjects(data.session.user)
       }
       if (redirectNotice) {
@@ -534,12 +543,12 @@ function App() {
       setIsSessionLoading(false)
     })
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession)
       setAuthMessage('')
       setIsAuthOpen(false)
       if (nextSession?.user) {
-        setIsDashboardOpen(true)
+        if (event === 'SIGNED_IN') setIsDashboardOpen(publicRoute !== '/editor')
         void loadCloudProjects(nextSession.user)
       } else {
         cloudSaveReadyRef.current = false
@@ -551,7 +560,7 @@ function App() {
     })
 
     return () => listener.subscription.unsubscribe()
-  }, [loadCloudProjects])
+  }, [loadCloudProjects, publicRoute])
 
   useEffect(() => {
     if (!supabase || !user || !activeCloudProjectId || !cloudSaveReadyRef.current) return
@@ -581,7 +590,7 @@ function App() {
         items
           .map((item) =>
             item.id === activeCloudProjectId
-              ? { ...item, name: project.name || 'Untitled', updated_at: new Date().toISOString() }
+              ? { ...item, name: project.name || 'Untitled', updated_at: new Date().toISOString(), data: project }
               : item,
           )
           .toSorted((a, b) => b.updated_at.localeCompare(a.updated_at)),
@@ -597,11 +606,33 @@ function App() {
       if (!drag) return
       const dx = (event.clientX - drag.pointerX) / (zoom / 100)
       const dy = (event.clientY - drag.pointerY) / (zoom / 100)
-      const next: Placement =
-        drag.mode === 'move'
-          ? { ...drag.start, x: Math.round(drag.start.x + dx), y: Math.round(drag.start.y + dy) }
+      if (drag.mode === 'move') {
+        setProject((current) =>
+          drag.ids.reduce((nextProject, id) => {
+            const start = drag.starts[id]
+            if (!start) return nextProject
+            return updateElementPlacement(
+              nextProject,
+              id,
+              device,
+              { ...start, x: Math.round(start.x + dx), y: Math.round(start.y + dy) },
+              false,
+            )
+          }, current),
+        )
+      } else {
+        const next = isCropMode
+          ? cropFromResize(drag.start, drag.handle ?? 'bottom-right', dx, dy)
           : resizePlacement(drag.start, drag.handle ?? 'bottom-right', dx, dy)
-      setProject((current) => updateElementPlacement(current, drag.id, device, next, false))
+        if (isCropMode) {
+          setProject((current) => ({
+            ...current,
+            elements: current.elements.map((element) => (element.id === drag.id ? { ...element, crop: next as ImageCrop } : element)),
+          }))
+        } else {
+          setProject((current) => updateElementPlacement(current, drag.id, device, next as Placement, false))
+        }
+      }
       setLastSaved('Saving')
     }
 
@@ -615,7 +646,7 @@ function App() {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', handlePointerUp)
     }
-  }, [device, zoom])
+  }, [device, isCropMode, zoom])
 
   function addElement(kind: ElementKind, item?: PaletteItem) {
     const maxZ = Math.max(0, ...project.elements.map((item) => item.placement.zIndex))
@@ -634,7 +665,7 @@ function App() {
       placement: { ...elementBase.placement, ...item?.patch?.placement },
     }
     commitProject((current) => ({ ...current, elements: [...current.elements, element] }))
-    setSelectedId(element.id)
+    selectElement(element.id)
     setRecentKinds((kinds) => [kind, ...kinds.filter((item) => item !== kind)].slice(0, 8))
   }
 
@@ -775,10 +806,10 @@ function App() {
     }
 
     const created = data as CloudProjectRow
-    setCloudProjects((items) => [{ id: created.id, name: created.name, updated_at: created.updated_at }, ...items])
+    setCloudProjects((items) => [{ id: created.id, name: created.name, updated_at: created.updated_at, data: normalizeCloudProject(created.data, created.name) }, ...items])
     setActiveCloudProjectId(created.id)
     setProject(normalizeCloudProject(created.data, created.name))
-    setSelectedId(created.data.elements?.[0]?.id ?? '')
+    selectInitialElement(created.data.elements?.[0]?.id ?? '')
     setCloudStatus('Cloud synced')
     setLastSaved('Cloud synced')
     setIsDashboardOpen(false)
@@ -815,10 +846,10 @@ function App() {
     }
 
     const created = data as CloudProjectRow
-    setCloudProjects((items) => [{ id: created.id, name: created.name, updated_at: created.updated_at }, ...items])
+    setCloudProjects((items) => [{ id: created.id, name: created.name, updated_at: created.updated_at, data: normalizeCloudProject(created.data, created.name) }, ...items])
     setActiveCloudProjectId(created.id)
     setProject(normalizeCloudProject(created.data, created.name))
-    setSelectedId(created.data.elements?.[0]?.id ?? '')
+    selectInitialElement(created.data.elements?.[0]?.id ?? '')
     setCloudStatus('Cloud synced')
     setLastSaved('Cloud synced')
     setIsDashboardOpen(false)
@@ -849,7 +880,7 @@ function App() {
     const row = data as CloudProjectRow
     setActiveCloudProjectId(row.id)
     setProject(normalizeCloudProject(row.data, row.name))
-    setSelectedId(row.data.elements?.[0]?.id ?? '')
+    selectInitialElement(row.data.elements?.[0]?.id ?? '')
     setCloudStatus('Cloud synced')
     setLastSaved('Cloud synced')
     setIsDashboardOpen(false)
@@ -912,6 +943,15 @@ function App() {
     }))
   }
 
+  function updateSelectedElements(patch: Partial<BuilderElement>) {
+    const ids = selectedIds.length ? selectedIds : selected ? [selected.id] : []
+    if (!ids.length) return
+    commitProject((current) => ({
+      ...current,
+      elements: current.elements.map((element) => (ids.includes(element.id) ? { ...element, ...patch } : element)),
+    }))
+  }
+
   function updatePlacement(patch: Partial<Placement>) {
     if (!selected) return
     const placement = resolvePlacement(selected, device)
@@ -923,26 +963,29 @@ function App() {
   function clearAll() {
     if (!window.confirm('Clear the canvas? This keeps the project but removes every element.')) return
     commitProject((current) => ({ ...current, elements: [] }))
-    setSelectedId('')
+    selectInitialElement('')
   }
 
   function resetTemplate() {
     if (!window.confirm('Reset to the starter Webception template?')) return
     commitProject(() => cloneProject(starterProject))
-    setSelectedId(starterProject.elements[0].id)
+    selectInitialElement(starterProject.elements[0].id)
   }
 
   function applyTemplate(key: TemplateKey) {
     if (!window.confirm(`Replace the canvas with the ${key} template?`)) return
     const next = makeTemplateProject(key)
     commitProject(() => next)
-    setSelectedId(next.elements[0]?.id ?? '')
+    selectInitialElement(next.elements[0]?.id ?? '')
   }
 
   function deleteSelected() {
     if (!selected) return
-    commitProject((current) => ({ ...current, elements: current.elements.filter((element) => element.id !== selected.id) }))
-    setSelectedId(project.elements.find((element) => element.id !== selected.id)?.id ?? '')
+    const ids = selectedIds.length ? selectedIds : [selected.id]
+    commitProject((current) => ({ ...current, elements: current.elements.filter((element) => !ids.includes(element.id)) }))
+    const nextSelected = project.elements.find((element) => !ids.includes(element.id))?.id ?? ''
+    setSelectedId(nextSelected)
+    setSelectedIds(nextSelected ? [nextSelected] : [])
   }
 
   function duplicateSelected() {
@@ -959,7 +1002,7 @@ function App() {
       },
     }
     commitProject((current) => ({ ...current, elements: [...current.elements, duplicate] }))
-    setSelectedId(duplicate.id)
+    selectElement(duplicate.id)
   }
 
   function moveLayer(delta: number) {
@@ -974,7 +1017,7 @@ function App() {
     setFuture((items) => [project, ...items])
     setHistory((items) => items.slice(0, -1))
     setProject(previous)
-    setSelectedId(previous.elements[0]?.id ?? '')
+    selectInitialElement(previous.elements[0]?.id ?? '')
   }
 
   function redo() {
@@ -983,22 +1026,81 @@ function App() {
     setHistory((items) => [...items, project])
     setFuture((items) => items.slice(1))
     setProject(next)
-    setSelectedId(next.elements[0]?.id ?? '')
+    selectInitialElement(next.elements[0]?.id ?? '')
   }
 
   function startDrag(event: React.PointerEvent, element: BuilderElement, mode: DragState['mode'], handle?: ResizeHandle) {
     if ((event.target as HTMLElement).closest('button, input, textarea, select')) return
+    if (element.locked) return
     event.preventDefault()
     event.stopPropagation()
-    setSelectedId(element.id)
+    selectElement(element.id, event.shiftKey)
+    const groupIds = element.groupId
+      ? project.elements.filter((item) => item.groupId === element.groupId && !item.locked).map((item) => item.id)
+      : selectedIds.includes(element.id) && selectedIds.length > 1
+        ? selectedIds
+        : [element.id]
+    const starts = Object.fromEntries(
+      project.elements
+        .filter((item) => groupIds.includes(item.id))
+        .map((item) => [item.id, resolvePlacement(item, device)]),
+    )
     dragRef.current = {
       id: element.id,
+      ids: groupIds,
       mode,
       handle,
       pointerX: event.clientX,
       pointerY: event.clientY,
-      start: resolvePlacement(element, device),
+      start: isCropMode && mode === 'resize' ? element.crop as Placement : resolvePlacement(element, device),
+      starts,
     }
+  }
+
+  function selectElement(id: string, additive = false) {
+    setSelectedId(id)
+    setSelectedIds((items) => {
+      if (!additive) return [id]
+      return items.includes(id) ? items.filter((item) => item !== id) : [...items, id]
+    })
+    setEditingId('')
+  }
+
+  function selectInitialElement(id: string) {
+    setSelectedId(id)
+    setSelectedIds(id ? [id] : [])
+    setEditingId('')
+  }
+
+  function groupSelected() {
+    const ids = selectedIds.length > 1 ? selectedIds : selected?.groupId ? project.elements.filter((item) => item.groupId === selected.groupId).map((item) => item.id) : []
+    if (ids.length < 2) return
+    const groupId = selected?.groupId || createId('group')
+    commitProject((current) => ({
+      ...current,
+      elements: current.elements.map((element) => (ids.includes(element.id) ? { ...element, groupId } : element)),
+    }))
+  }
+
+  function ungroupSelected() {
+    const groupId = selected?.groupId
+    if (!groupId) return
+    commitProject((current) => ({
+      ...current,
+      elements: current.elements.map((element) => (element.groupId === groupId ? { ...element, groupId: '' } : element)),
+    }))
+  }
+
+  function updateInlineText(element: BuilderElement, value: string) {
+    commitProject((current) => ({
+      ...current,
+      elements: current.elements.map((item) =>
+        item.id === element.id
+          ? { ...item, ...(inlineTextTarget(item.kind) === 'title' ? { title: value } : { text: value }) }
+          : item,
+      ),
+    }))
+    setEditingId('')
   }
 
   function openQuickMenu(event: React.MouseEvent, element: BuilderElement) {
@@ -1075,7 +1177,7 @@ function App() {
       }
     })
 
-    if (placedElements.length) setSelectedId(placedElements.at(-1)?.id ?? placedElements[0].id)
+    if (placedElements.length) selectElement(placedElements.at(-1)?.id ?? placedElements[0].id)
     setMediaStatus(`Uploaded ${uploadedAssets.length} ${uploadedAssets.length === 1 ? 'image' : 'images'}`)
   }
 
@@ -1087,7 +1189,7 @@ function App() {
       zIndex: maxZ + 1,
     })
     commitProject((current) => ({ ...current, elements: [...current.elements, element] }))
-    setSelectedId(element.id)
+    selectElement(element.id)
   }
 
   function dropPlacementFromEvent(event: React.DragEvent): Partial<Placement> {
@@ -1197,7 +1299,7 @@ function App() {
           status={cloudStatus}
           busy={isCloudBusy}
           onThemeMode={(themeMode) => commitProject((current) => ({ ...current, themeMode }))}
-          onProjectOpen={openCloudProject}
+          onProjectOpen={(id) => window.open(`/editor?project=${encodeURIComponent(id)}`, '_blank', 'noopener')}
           onNewProject={createCloudProject}
           onSampleProject={createSampleProject}
           onDeleteProject={deleteCloudProject}
@@ -1320,11 +1422,15 @@ function App() {
             {selected && (
               <FloatingElementToolbar
                 selected={selected}
-                placement={resolvePlacement(selected, device)}
-                zoom={zoom}
+                selectedCount={selectedElements.length}
+                cropMode={isCropMode}
                 onStyle={updateStyle}
                 onAnimation={updateAnimation}
                 onPlacement={updatePlacement}
+                onGroup={groupSelected}
+                onUngroup={ungroupSelected}
+                onLock={() => updateSelectedElements({ locked: !selected.locked })}
+                onCropMode={(value) => setIsCropMode(value)}
                 onUpdate={updateElement}
                 onPreview={() => {
                   setPreviewTick((value) => value + 1)
@@ -1341,9 +1447,13 @@ function App() {
                     key={`${element.id}-${previewTick}`}
                     element={element}
                     placement={placement}
-                    selected={element.id === selectedId}
+                    selected={selectedIds.includes(element.id)}
+                    editing={editingId === element.id}
+                    cropMode={isCropMode && selectedId === element.id}
                     previewing={isPreviewing}
-                    onSelect={() => setSelectedId(element.id)}
+                    onSelect={(event) => selectElement(element.id, 'shiftKey' in event ? event.shiftKey : false)}
+                    onStartEditing={() => setEditingId(element.id)}
+                    onInlineText={(value) => updateInlineText(element, value)}
                     onPointerDown={(event) => startDrag(event, element, 'move')}
                     onResizePointerDown={(event, handle) => startDrag(event, element, 'resize', handle)}
                     onContextMenu={(event) => openQuickMenu(event, element)}
@@ -1439,7 +1549,7 @@ function App() {
           status={cloudStatus}
           busy={isCloudBusy}
           onThemeMode={(themeMode) => commitProject((current) => ({ ...current, themeMode }))}
-          onProjectOpen={openCloudProject}
+          onProjectOpen={(id) => window.open(`/editor?project=${encodeURIComponent(id)}`, '_blank', 'noopener')}
           onNewProject={createCloudProject}
           onSampleProject={createSampleProject}
           onDeleteProject={deleteCloudProject}
@@ -1810,6 +1920,7 @@ function ProjectDashboard({
 }) {
   const activeProject = projects.find((item) => item.id === activeProjectId)
   const firstName = user.email?.split('@')[0] ?? 'there'
+  const nextTheme = themeMode === 'system' ? 'light' : themeMode === 'light' ? 'dark' : 'system'
 
   return (
       <section className="project-dashboard" aria-label="Project dashboard">
@@ -1820,18 +1931,9 @@ function ProjectDashboard({
             <small>{projects.length} saved {projects.length === 1 ? 'project' : 'projects'} · {status}</small>
           </div>
           <div className="dashboard-header-actions">
-            <div className="dashboard-theme-toggle" aria-label="Dashboard theme">
-              {(['system', 'light', 'dark'] as const).map((mode) => (
-                <button
-                  type="button"
-                  key={mode}
-                  className={themeMode === mode ? 'active' : ''}
-                  onClick={() => onThemeMode(mode)}
-                >
-                  {mode}
-                </button>
-              ))}
-            </div>
+            <button type="button" className={`dashboard-theme-icon ${themeMode}`} onClick={() => onThemeMode(nextTheme)} aria-label={`Theme: ${themeMode}`}>
+              <ThemeIcon mode={themeMode} />
+            </button>
             <button type="button" onClick={onNewProject} disabled={busy}>New project</button>
             <button type="button" onClick={onSignOut}>Sign out</button>
             <button type="button" onClick={onClose} aria-label="Close dashboard">x</button>
@@ -1867,7 +1969,7 @@ function ProjectDashboard({
                 onClick={() => onSampleProject(sample.key)}
                 disabled={busy}
               >
-                <DashboardSamplePreview kind={sample.key} />
+                <DashboardSitePreview project={makeTemplateProject(sample.key)} tone={sample.key} />
                 <strong>{sample.name}</strong>
                 <span>{sample.detail}</span>
                 <small>Open sample</small>
@@ -1899,7 +2001,7 @@ function ProjectDashboard({
                 }
               }}
             >
-              <DashboardProjectPreview active={item.id === activeProjectId} />
+              <DashboardSitePreview project={item.data} active={item.id === activeProjectId} />
               <div className="project-card-meta">
                 <strong>{item.name}</strong>
                 <span>Updated {formatProjectDate(item.updated_at)}</span>
@@ -1936,30 +2038,34 @@ function ProjectDashboard({
   )
 }
 
-function DashboardSamplePreview({ kind }: { kind: TemplateKey }) {
-  return (
-    <div className={`dashboard-sample-preview ${kind}`} aria-hidden="true">
-      <span />
-      <span />
-      <span />
-      <span />
-    </div>
-  )
-}
+function DashboardSitePreview({ project, active, tone }: { project: BuilderProject; active?: boolean; tone?: TemplateKey }) {
+  const visibleElements = project.elements
+    .toSorted((a, b) => a.placement.zIndex - b.placement.zIndex)
+    .slice(0, 8)
 
-function DashboardProjectPreview({ active }: { active: boolean }) {
   return (
-    <div className={`dashboard-project-preview ${active ? 'active' : ''}`} aria-hidden="true">
-      <div className="preview-mini-nav" />
-      <div className="preview-mini-hero">
-        <span />
-        <span />
-      </div>
-      <div className="preview-mini-grid">
-        <span />
-        <span />
-        <span />
-      </div>
+    <div className={`dashboard-site-preview ${tone ?? ''} ${active ? 'active' : ''}`} style={{ background: project.pageBackground }} aria-hidden="true">
+      {visibleElements.map((element) => {
+        const placement = element.placement
+        return (
+          <span
+            key={element.id}
+            className={`mini-el ${element.kind}`}
+            style={{
+              left: `${placement.x / 12}%`,
+              top: `${placement.y / 8.2}%`,
+              width: `${placement.width / 12}%`,
+              height: `${placement.height / 8.2}%`,
+              zIndex: placement.zIndex,
+              background: element.kind === 'image' && element.src ? `url(${element.src}) center / cover` : element.style.background,
+              color: element.style.color,
+              borderRadius: element.kind === 'circle' ? '999px' : Math.max(2, element.style.radius / 5),
+            }}
+          >
+            {isTextLike(element.kind) && <i>{element.title || element.text}</i>}
+          </span>
+        )
+      })}
     </div>
   )
 }
@@ -2109,32 +2215,36 @@ function AuthForm({
 
 function FloatingElementToolbar({
   selected,
-  placement,
-  zoom,
+  selectedCount,
+  cropMode,
   onStyle,
   onAnimation,
   onPlacement,
+  onGroup,
+  onUngroup,
+  onLock,
+  onCropMode,
   onUpdate,
   onPreview,
 }: {
   selected: BuilderElement
-  placement: Placement
-  zoom: number
+  selectedCount: number
+  cropMode: boolean
   onStyle: (patch: Partial<ElementStyle>) => void
   onAnimation: (patch: Partial<ElementAnimation>) => void
   onPlacement: (patch: Partial<Placement>) => void
+  onGroup: () => void
+  onUngroup: () => void
+  onLock: () => void
+  onCropMode: (value: boolean) => void
   onUpdate: (patch: Partial<BuilderElement>) => void
   onPreview: () => void
 }) {
-  const top = Math.max(8, placement.y - 58)
-  const left = Math.max(8, placement.x + placement.width / 2)
   return (
     <div
       className="floating-element-toolbar"
       style={{
-        left,
-        top,
-        transform: `translateX(-50%) scale(${100 / zoom})`,
+        transform: 'translateX(-50%)',
       }}
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -2153,7 +2263,7 @@ function FloatingElementToolbar({
       )}
       {(selected.kind === 'image' || selected.kind === 'gallery') && (
         <>
-          <button type="button" onClick={() => onUpdate({ crop: { x: 12, y: 12, width: 76, height: 76 } })}>Crop</button>
+          <button type="button" className={cropMode ? 'active' : ''} onClick={() => onCropMode(!cropMode)}>Crop</button>
           <button type="button" onClick={() => onUpdate({ imageAdjustments: { ...selected.imageAdjustments, contrast: selected.imageAdjustments.contrast === 100 ? 130 : 100 } })}>Contrast</button>
         </>
       )}
@@ -2167,7 +2277,10 @@ function FloatingElementToolbar({
         {animations.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
       </select>
       <button type="button" onClick={onPreview}>Animate</button>
-      <button type="button" onClick={() => onPlacement({ zIndex: placement.zIndex + 1 })}>Position</button>
+      <button type="button" onClick={() => onPlacement({ zIndex: selected.placement.zIndex + 1 })}>Position</button>
+      <button type="button" disabled={selectedCount < 2} onClick={onGroup}>Group</button>
+      <button type="button" disabled={!selected.groupId} onClick={onUngroup}>Ungroup</button>
+      <button type="button" className={selected.locked ? 'active' : ''} onClick={onLock}>{selected.locked ? 'Unlock' : 'Lock'}</button>
     </div>
   )
 }
@@ -2745,8 +2858,12 @@ function CanvasElement({
   element,
   placement,
   selected,
+  editing,
+  cropMode,
   previewing,
   onSelect,
+  onStartEditing,
+  onInlineText,
   onPointerDown,
   onResizePointerDown,
   onContextMenu,
@@ -2754,8 +2871,12 @@ function CanvasElement({
   element: BuilderElement
   placement: Placement
   selected: boolean
+  editing: boolean
+  cropMode: boolean
   previewing: boolean
-  onSelect: () => void
+  onSelect: (event: React.MouseEvent | React.FocusEvent) => void
+  onStartEditing: () => void
+  onInlineText: (value: string) => void
   onPointerDown: (event: React.PointerEvent) => void
   onResizePointerDown: (event: React.PointerEvent, handle: ResizeHandle) => void
   onContextMenu: (event: React.MouseEvent) => void
@@ -2791,17 +2912,23 @@ function CanvasElement({
 
   return (
     <article
-      className={`canvas-element ${element.kind} text-effect-${element.style.textEffect} ${element.style.italic ? 'is-italic' : ''} ${element.style.underline ? 'is-underlined' : ''} ${selected ? 'selected' : ''} ${previewing ? `animate-${element.animation.type}` : ''}`}
+      className={`canvas-element ${element.kind} text-effect-${element.style.textEffect} ${element.style.italic ? 'is-italic' : ''} ${element.style.underline ? 'is-underlined' : ''} ${element.locked ? 'locked' : ''} ${element.groupId ? 'grouped' : ''} ${cropMode ? 'crop-mode' : ''} ${selected ? 'selected' : ''} ${previewing ? `animate-${element.animation.type}` : ''}`}
       style={style}
       onClick={onSelect}
       onPointerDown={onPointerDown}
       onContextMenu={onContextMenu}
+      onDoubleClick={(event) => {
+        if (!isTextEditable(element.kind)) return
+        event.preventDefault()
+        event.stopPropagation()
+        onStartEditing()
+      }}
       tabIndex={0}
       onFocus={onSelect}
       aria-label={`${element.name} element`}
     >
-      <ElementContent element={element} />
-      {selected && (
+      <ElementContent element={element} editing={editing} onInlineText={onInlineText} />
+      {selected && !element.locked && (
         <>
           {(['top-left', 'top', 'top-right', 'right', 'bottom-right', 'bottom', 'bottom-left', 'left'] as const).map((handle) => (
             <span
@@ -2817,7 +2944,31 @@ function CanvasElement({
   )
 }
 
-function ElementContent({ element }: { element: BuilderElement }) {
+function ElementContent({
+  element,
+  editing = false,
+  onInlineText,
+}: {
+  element: BuilderElement
+  editing?: boolean
+  onInlineText?: (value: string) => void
+}) {
+  if (editing && isTextEditable(element.kind)) {
+    const target = inlineTextTarget(element.kind)
+    return (
+      <div
+        className="inline-text-editor"
+        contentEditable
+        suppressContentEditableWarning
+        autoFocus
+        onPointerDown={(event) => event.stopPropagation()}
+        onBlur={(event) => onInlineText?.(event.currentTarget.textContent ?? '')}
+      >
+        {target === 'title' ? element.title : element.text}
+      </div>
+    )
+  }
+
   switch (element.kind) {
     case 'navbar':
       return (
@@ -2836,6 +2987,10 @@ function ElementContent({ element }: { element: BuilderElement }) {
           <button type="button">{element.action}</button>
         </div>
       )
+    case 'text':
+      return <div className={`text-render align-${element.style.align}`}><p>{element.text}</p></div>
+    case 'richText':
+      return <div className={`rich-text-render align-${element.style.align}`}><h2>{element.title}</h2><p>{element.text}</p></div>
     case 'button':
       return <button type="button" className="button-render">{element.text || element.action}</button>
     case 'image': {
@@ -2863,11 +3018,14 @@ function ElementContent({ element }: { element: BuilderElement }) {
     case 'pricing':
       return <div className="pricing-render"><h2>{element.title}</h2><strong>$12</strong><p>{element.text}</p><button type="button">{element.action}</button></div>
     case 'testimonial':
-      return <blockquote className="quote-render">"{element.text}"<cite>{element.title}</cite></blockquote>
+      return <blockquote className="quote-render"><p>"{element.text}"</p><cite>{element.title}</cite></blockquote>
     case 'faq':
-      return <ListRender title={element.title} items={['Can I export it?', 'Does it work locally?', 'Can I animate blocks?']} />
+      return <FaqRender title={element.title} items={['Can I export it?', 'Does it work locally?', 'Can I animate blocks?']} />
     case 'stats':
-      return <div className="stats-render">{['18 blocks', '3 devices', '9 motions'].map((item) => <strong key={item}>{item}</strong>)}</div>
+      return <div className="stats-render">{['18 blocks', '3 devices', '9 motions'].map((item) => {
+        const [value, ...label] = item.split(' ')
+        return <strong key={item}><span>{value}</span><small>{label.join(' ')}</small></strong>
+      })}</div>
     case 'contact':
       return <div className="form-render"><input placeholder="Name" /><input placeholder="Email" /><textarea placeholder="Message" /><button type="button">{element.action}</button></div>
     case 'footer':
@@ -2891,6 +3049,20 @@ function ElementContent({ element }: { element: BuilderElement }) {
 
 function ListRender({ title, items }: { title: string; items: string[] }) {
   return <div className="list-render"><h2>{title}</h2>{items.map((item) => <p key={item}>{item}</p>)}</div>
+}
+
+function FaqRender({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="faq-render">
+      <h2>{title}</h2>
+      {items.map((item) => (
+        <details key={item} open>
+          <summary>{item}</summary>
+          <p>Yes. Tune the copy, style, layout, and export whenever it is ready.</p>
+        </details>
+      ))}
+    </div>
+  )
 }
 
 function ShapeRender({ element }: { element: BuilderElement }) {
@@ -3195,6 +3367,14 @@ function imageFilter(adjustments: ImageAdjustments) {
   return `brightness(${adjustments.brightness}%) contrast(${adjustments.contrast}%) saturate(${adjustments.saturation}%) grayscale(${adjustments.grayscale}%) blur(${adjustments.blur}px) hue-rotate(${adjustments.hueRotate}deg)`
 }
 
+function isTextEditable(kind: ElementKind) {
+  return ['text', 'richText', 'hero', 'button', 'badge', 'pill'].includes(kind)
+}
+
+function inlineTextTarget(kind: ElementKind): 'title' | 'text' {
+  return kind === 'hero' || kind === 'richText' ? 'title' : 'text'
+}
+
 function resizePlacement(start: Placement, handle: ResizeHandle, dx: number, dy: number): Placement {
   const minWidth = 32
   const minHeight = 24
@@ -3232,6 +3412,30 @@ function resizePlacement(start: Placement, handle: ResizeHandle, dx: number, dy:
   }
 }
 
+function cropFromResize(start: ImageCrop, handle: ResizeHandle, dx: number, dy: number): ImageCrop {
+  const scale = 0.18
+  let { x, y, width, height } = start
+  const changeX = Math.round(dx * scale)
+  const changeY = Math.round(dy * scale)
+
+  if (handle.includes('left')) {
+    x = clamp(x + changeX, 0, 90)
+    width = clamp(width - changeX, 10, 100 - x)
+  }
+  if (handle.includes('right')) {
+    width = clamp(width + changeX, 10, 100 - x)
+  }
+  if (handle.includes('top')) {
+    y = clamp(y + changeY, 0, 90)
+    height = clamp(height - changeY, 10, 100 - y)
+  }
+  if (handle.includes('bottom')) {
+    height = clamp(height + changeY, 10, 100 - y)
+  }
+
+  return { x, y, width, height }
+}
+
 function createId(kind: string) {
   return `${kind}-${crypto.randomUUID().slice(0, 8)}`
 }
@@ -3256,6 +3460,8 @@ function makeElement(kind: ElementKind, placementPatch: Partial<Placement> = {})
     },
     style: baseStyle,
     animation: { type: 'rise', duration: 620, delay: 0, easing: 'ease-out', repeat: false },
+    locked: false,
+    groupId: '',
     imageAdjustments: defaultImageAdjustments(),
     crop: { x: 0, y: 0, width: 100, height: 100 },
     link: { enabled: false, url: '', newTab: true },
@@ -3350,19 +3556,20 @@ function defaultPlacement(kind: ElementKind): Placement {
 
 function defaultStyle(kind: ElementKind): ElementStyle {
   const isShape = ['rect', 'circle', 'line', 'pill', 'blob', 'badge', 'icon'].includes(kind)
+  const isPlainText = kind === 'text' || kind === 'richText'
   return {
-    background: kind === 'button' ? '#244e38' : isShape ? '#dbe8d6' : '#ffffff',
+    background: kind === 'button' ? '#244e38' : isShape ? '#dbe8d6' : isPlainText ? 'transparent' : '#ffffff',
     color: kind === 'button' ? '#ffffff' : '#192119',
     borderColor: '#d7ddd2',
-    borderWidth: kind === 'line' ? 0 : 1,
+    borderWidth: kind === 'line' || isPlainText ? 0 : 1,
     radius: kind === 'circle' ? 80 : kind === 'blob' ? 46 : kind === 'button' || kind === 'pill' || kind === 'badge' ? 999 : 16,
     opacity: kind === 'blob' ? 74 : 100,
     fontSize: kind === 'hero' ? 44 : kind === 'navbar' ? 15 : kind === 'button' || kind === 'badge' ? 15 : 18,
     fontWeight: kind === 'hero' ? 800 : 700,
     fontFamily: kind === 'richText' ? 'General Sans' : 'Satoshi',
     align: kind === 'hero' || kind === 'navbar' ? 'left' : 'center',
-    padding: kind === 'button' || isShape ? 12 : 22,
-    shadow: kind === 'blob' || kind === 'line' ? 0 : 14,
+    padding: kind === 'button' || isShape ? 12 : isPlainText ? 0 : 22,
+    shadow: kind === 'blob' || kind === 'line' || isPlainText ? 0 : 14,
     rotation: 0,
     italic: false,
     underline: false,
@@ -3459,6 +3666,8 @@ function normalizeElement(element: BuilderElement): BuilderElement {
       textEffect: element.style?.textEffect ?? 'none',
     },
     animation: { ...fallback.animation, ...element.animation },
+    locked: Boolean(element.locked),
+    groupId: element.groupId ?? '',
     imageAdjustments: { ...defaultImageAdjustments(), ...element.imageAdjustments },
     crop: { ...fallback.crop, ...element.crop },
     link: { ...fallback.link, ...element.link },
@@ -3567,6 +3776,8 @@ function exportClass(kind: ElementKind) {
 function exportContent(element: BuilderElement, assetPaths: Map<string, string>) {
   if (element.kind === 'navbar') return `<div class="wc-navbar"><strong>${escapeHtml(element.title)}</strong><span>Work Pricing Contact</span><button>${escapeHtml(element.action)}</button></div>`
   if (element.kind === 'hero') return `<h1>${escapeHtml(element.title)}</h1><p>${escapeHtml(element.text)}</p><small>${escapeHtml(element.subtext)}</small><button>${escapeHtml(element.action)}</button>`
+  if (element.kind === 'text') return `<p>${escapeHtml(element.text)}</p>`
+  if (element.kind === 'richText') return `<h2>${escapeHtml(element.title)}</h2><p>${escapeHtml(element.text)}</p>`
   if (element.kind === 'button') return `<button class="wc-button">${escapeHtml(element.text || element.action)}</button>`
   if (element.kind === 'image') {
     const src = element.mediaAssetId ? assetPaths.get(element.mediaAssetId) ?? '' : safeMediaUrl(element.src)
@@ -3575,6 +3786,8 @@ function exportContent(element: BuilderElement, assetPaths: Map<string, string>)
   if (element.kind === 'gallery') return '<div class="wc-gallery"><span></span><span></span><span></span></div>'
   if (element.kind === 'divider' || element.kind === 'line') return `<div class="wc-divider"></div>`
   if (element.kind === 'contact') return `<form class="wc-form"><input placeholder="Name" /><input placeholder="Email" /><textarea placeholder="Message"></textarea><button>${escapeHtml(element.action)}</button></form>`
+  if (element.kind === 'faq') return `<h2>${escapeHtml(element.title)}</h2><details open><summary>Can I export it?</summary><p>Yes. Tune the copy, style, layout, and export whenever it is ready.</p></details><details open><summary>Does it work locally?</summary><p>Yes. The downloaded site is static and ready to host.</p></details>`
+  if (element.kind === 'stats') return `<div class="wc-grid"><section><strong>18</strong><p>blocks</p></section><section><strong>3</strong><p>devices</p></section><section><strong>9</strong><p>motions</p></section></div>`
   if (['rect', 'circle', 'blob', 'spacer'].includes(element.kind)) return ''
   if (['pill', 'badge'].includes(element.kind)) return escapeHtml(element.text)
   if (element.kind === 'icon') return exportLogoMark()
@@ -3671,7 +3884,13 @@ function cleanupAuthRedirectUrl() {
 function readPublicRoute(): PublicRoute {
   if (window.location.pathname === '/login') return '/login'
   if (window.location.pathname === '/signup') return '/signup'
+  if (window.location.pathname === '/editor') return '/editor'
   return '/'
+}
+
+function readEditorProjectId() {
+  if (window.location.pathname !== '/editor') return ''
+  return new URLSearchParams(window.location.search).get('project') ?? ''
 }
 
 export default App
